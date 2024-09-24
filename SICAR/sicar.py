@@ -14,7 +14,8 @@ import random
 import httpx
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup
-from tqdm import tqdm
+# from tqdm import tqdm
+from tqdm.notebook import tqdm # for notebooks
 from typing import Dict
 from pathlib import Path
 from urllib.parse import urlencode
