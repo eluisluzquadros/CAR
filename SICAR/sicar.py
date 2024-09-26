@@ -237,6 +237,7 @@ class Sicar(Url):
                     unit="iB",
                     unit_scale=True,
                     desc=f"Downloading polygon '{polygon.value}' for state '{state.value}'",
+                    disable=True  # Adicione esta linha para silenciar a barra de progresso
                 ) as progress_bar:
                     for chunk in response.iter_bytes():
                         fd.write(chunk)
