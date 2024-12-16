@@ -1,111 +1,68 @@
-"""
-Captcha Abstract Base Class.
-
-This class represents an abstract base class for a Captcha.
-
-Classes:
-    Captcha: Abstract base class representing a Captcha.
-"""
+"""Captcha Abstract Base Class with improved error handling."""
 
 from abc import ABC, abstractmethod
 import tempfile
 from PIL import Image
-import matplotlib.image as mpimg
 import numpy as np
 import cv2
+import logging
+from typing import Optional
 
+class CaptchaProcessingError(Exception):
+    """Exception raised when captcha processing fails."""
+    pass
 
 class Captcha(ABC):
-    """
-    Abstract base class representing a Captcha.
-
-    This class defines the interface for getting a Captcha.
-
-    Methods:
-        get_captcha(captcha) -> str:
-            Abstract method to get the Captcha value.
-
-    """
-
+    def __init__(self):
+        self._logger = logging.getLogger(self.__class__.__name__)
+    
     @abstractmethod
     def get_captcha(self, captcha: Image) -> str:
-        """
-        Abstract method to get the Captcha value.
-
-        Parameters:
-            captcha (str): The captcha value to process.
-
-        Returns:
-            str: The processed Captcha value.
-
-        """
+        """Abstract method to get the Captcha value."""
+        pass
 
     def _png_to_jpg(self, captcha: Image) -> np.ndarray:
-        """
-        Convert a PNG image to a JPEG image represented as a NumPy array.
+        """Convert PNG to JPG with improved error handling."""
+        try:
+            # Converter diretamente para array numpy
+            img_array = np.array(captcha.convert('RGB'))
+            return cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+        except Exception as e:
+            self._logger.error(f"Error converting image: {str(e)}")
+            raise CaptchaProcessingError("Failed to convert image format") from e
 
-        Parameters:
-            captcha (Image): The PNG image to convert.
+    def _improve_image(self, image: np.ndarray) -> np.ndarray:
+        """Improve image quality with better error handling."""
+        try:
+            # Garantir que a imagem está em grayscale
+            if len(image.shape) > 2:
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Aplicar threshold adaptativo
+            binary = cv2.adaptiveThreshold(
+                image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                cv2.THRESH_BINARY, 11, 2
+            )
 
-        Returns:
-            np.ndarray: The converted JPEG image represented as a NumPy array.
+            # Remover ruído
+            kernel = np.ones((2,2), np.uint8)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+            
+            return binary
+        except Exception as e:
+            self._logger.error(f"Error improving image: {str(e)}")
+            raise CaptchaProcessingError("Failed to improve image") from e
 
-        Note:
-            This method saves the input PNG image to a temporary file with a ".png" suffix. It then converts the PNG image
-            to a JPEG image using matplotlib's `imsave` function, with the grayscale colormap. The resulting JPEG image is
-            saved to another temporary file with a ".jpg" suffix.
-
-            The saved JPEG image is then loaded using OpenCV's `imread` function, and the image data is returned as a NumPy
-            array.
-        """
-        with tempfile.NamedTemporaryFile(suffix=".png") as png:
-            with tempfile.NamedTemporaryFile(suffix=".jpg") as jpg:
-                captcha.save(png.name)
-                mpimg.imsave(
-                    jpg.name,
-                    mpimg.imread(png.name, 0),
-                    cmap="gray",
-                    vmin=0,
-                    vmax=255,
-                )
-                return cv2.imread(jpg.name, -1)
-
-    def _improve_image(self, image: np.ndarray):
-        """
-        Apply image enhancement operations to improve OCR results.
-
-        Parameters:
-            image (np.ndarray): The input image as a NumPy array.
-
-        Returns:
-            np.ndarray: The improved image as a NumPy array.
-
-        Note:
-            This method applies a series of image enhancement operations, including thresholding, dilation, and erosion,
-            to improve the visibility and clarity of characters in the image for OCR.
-        """
-        _, image = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU + 2)
-        image = cv2.dilate(image, np.ones((3, 2), np.uint8), iterations=1)
-        image = cv2.erode(image, np.ones((4, 1), np.uint8), iterations=2)
-        image = cv2.dilate(image, np.ones((3, 1), np.uint8), iterations=2)
-        image = cv2.erode(image, np.ones((2, 1), np.uint8), iterations=2)
-        return image
-
-    def _process_captcha(self, captcha: Image):
-        """
-        Process the captcha image to enhance its quality for OCR.
-
-        Parameters:
-            captcha (Image): The captcha image.
-
-        Returns:
-            np.ndarray: The processed image as a NumPy array.
-
-        Note:
-            This method converts the captcha image from PNG to JPEG format, applies grayscale conversion using OpenCV,
-            and performs image enhancement operations such as thresholding, dilation, and erosion to improve the
-            visibility of characters for OCR.
-        """
-        return self._improve_image(
-            cv2.cvtColor(self._png_to_jpg(captcha), cv2.COLOR_BGR2GRAY)
-        )
+    def _process_captcha(self, captcha: Image) -> np.ndarray:
+        """Process captcha with comprehensive error handling."""
+        try:
+            # Converter para array numpy
+            img_array = self._png_to_jpg(captcha)
+            
+            # Processar imagem
+            processed = self._improve_image(img_array)
+            
+            return processed
+        except Exception as e:
+            self._logger.error(f"Error processing captcha: {str(e)}")
+            raise CaptchaProcessingError("Failed to process captcha") from e
