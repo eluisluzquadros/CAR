@@ -39,24 +39,28 @@ class HttpClient:
         self._set_default_headers()
     
     def _create_session(self, verify_ssl: bool, timeout: float) -> httpx.Client:
-        """Create an HTTP session with appropriate SSL context"""
-        transport = httpx.HTTPTransport(
-            verify=False,  # Desabilita verificação SSL
-            retries=3,    # Número de tentativas
-        )
-        
-        limits = httpx.Limits(
+    """Create an HTTP session with appropriate SSL context"""
+    
+    # Configurações do SSL
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
+    transport = httpx.HTTPTransport(
+        verify=False,
+        retries=3,
+        pool_limits=httpx.Limits(
             max_keepalive_connections=5,
             max_connections=10,
             keepalive_expiry=5.0
         )
-        
-        return httpx.Client(
-            transport=transport,
-            timeout=timeout,
-            follow_redirects=True,
-            limits=limits
-        )
+    )
+    
+    return httpx.Client(
+        transport=transport,
+        timeout=timeout,
+        follow_redirects=True,
+        verify=False  # Desabilitando verificação SSL
+    )
     
     def _set_default_headers(self):
         """Set default headers for all requests"""

@@ -75,13 +75,43 @@ class Sicar(Url):
             pass
 
     def _download_captcha(self) -> Image:
-        """Download a captcha image."""
-        try:
-            url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
-            response = self._client.get(url)
-            return Image.open(io.BytesIO(response.content))
-        except Exception as error:
-            raise FailedToDownloadCaptchaException() from error
+    """Download a captcha image from the SICAR system."""
+    try:
+        url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
+        
+        # Configurar headers específicos para o captcha
+        headers = {
+            'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'image',
+            'Sec-Fetch-Mode': 'no-cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        # Tentar download com retry
+        for attempt in range(3):
+            try:
+                response = self._client.get(url, headers=headers, timeout=30.0)
+                if response.status_code == 200:
+                    try:
+                        return Image.open(io.BytesIO(response.content))
+                    except Exception as img_error:
+                        print(f"Erro ao processar imagem: {str(img_error)}")
+                        raise
+            except Exception as e:
+                print(f"Tentativa {attempt + 1} falhou: {str(e)}")
+                if attempt < 2:  # Se não for a última tentativa
+                    time.sleep(2 * (attempt + 1))  # Espera progressiva
+                continue
+        
+        raise FailedToDownloadCaptchaException()
+        
+    except Exception as error:
+        print(f"Erro ao baixar captcha: {str(error)}")
+        raise FailedToDownloadCaptchaException() from error
 
     def _download_polygon(self, state: State, polygon: Polygon, captcha: str, 
                          folder: str, chunk_size: int = 1024) -> Path:
