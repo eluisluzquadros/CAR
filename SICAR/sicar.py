@@ -90,4 +90,133 @@ class Sicar(Url):
         except Exception as error:
             raise FailedToDownloadPolygonException() from error
 
-    # O resto dos métodos permanece igual
+    def download_state(
+        self,
+        state: State | str,
+        polygon: Polygon | str,
+        folder: Path | str = Path("temp"),
+        tries: int = 25,
+        debug: bool = False,
+        chunk_size: int = 1024,
+    ) -> Path | bool:
+        """
+        Download the polygon or other output format for the specified state.
+
+        Parameters:
+            state (State | str): The state for which to download the files. It can be either a `State` enum value or a string representing the state's abbreviation.
+            polygon (Polygon | str): The polygon to download the files. It can be either a `Polygon` enum value or a string representing the polygon's.
+            folder (Path | str, optional): The folder path where the downloaded data will be saved. Defaults to "temp".
+            tries (int, optional): The number of attempts to download the data. Defaults to 25.
+            debug (bool, optional): Whether to print debug information. Defaults to False.
+            chunk_size (int, optional): The size of each chunk to download. Defaults to 1024.
+
+        Returns:
+            Path | bool: The path to the downloaded data if successful, or False if download fails.
+
+        Note:
+            This method attempts to download the polygon for the specified state.
+            It tries multiple times, using a captcha for verification. The downloaded data is saved to the specified folder.
+            The method returns the path to the downloaded data if successful, or False if the download fails after the specified number of tries.
+        """
+        if isinstance(state, str):
+            try:
+                state = State(state.upper())
+            except ValueError as error:
+                raise StateCodeNotValidException(state) from error
+
+        if isinstance(polygon, str):
+            try:
+                polygon = Polygon(polygon.upper())
+            except ValueError as error:
+                raise PolygonNotValidException(polygon) from error
+
+        Path(folder).mkdir(parents=True, exist_ok=True)
+
+        captcha = ""
+        info = f"'{polygon.value}' for '{state.value}'"
+
+        while tries > 0:
+            try:
+                captcha = self._driver.get_captcha(self._download_captcha())
+
+                if len(captcha) == 5:
+                    if debug:
+                        print(
+                            f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'"
+                        )
+
+                    return self._download_polygon(
+                        state=state,
+                        polygon=polygon,
+                        captcha=captcha,
+                        folder=folder,
+                        chunk_size=chunk_size,
+                    )
+                elif debug:
+                    print(
+                        f"[{tries:02d}] - Invalid captcha '{captcha}' to request {info}"
+                    )
+            except (
+                FailedToDownloadCaptchaException,
+                FailedToDownloadPolygonException,
+            ) as error:
+                if debug:
+                    print(f"[{tries:02d}] - {error} When requesting {info}")
+            finally:
+                tries -= 1
+                time.sleep(random.random() + random.random())
+
+        return False
+
+    def download_country(
+        self,
+        polygon: Polygon | str,
+        folder: Path | str = Path("brazil"),
+        tries: int = 25,
+        debug: bool = False,
+        chunk_size: int = 1024,
+    ):
+        """
+        Download polygon for the entire country.
+
+        Parameters:
+            polygon (Polygon | str): The polygon to download the files. It can be either a `Polygon` enum value or a string representing the polygon's.
+            folder (Path | str, optional): The folder path where the downloaded files will be saved. Defaults to 'brazil'.
+            tries (int, optional): The number of download attempts allowed per state. Defaults to 25.
+            debug (bool, optional): Whether to enable debug mode with additional print statements. Defaults to False.
+            chunk_size (int, optional): The size of each chunk to download. Defaults to 1024.
+
+        Returns:
+            Dict: A dictionary containing the results of the download operation.
+                The keys are the state abbreviations, and the values are dictionaries representing the results of downloading each state.
+                Each state's dictionary follows the same structure as the result of the `download_state` method.
+                If a download fails for a state the corresponding value will be False.
+        """
+        result = {}
+        for state in State:
+            Path(os.path.join(folder, f"{state}")).mkdir(parents=True, exist_ok=True)
+
+            result[str(state)] = self.download_state(
+                state=state,
+                polygon=polygon,
+                folder=folder,
+                tries=tries,
+                debug=debug,
+                chunk_size=chunk_size,
+            )
+
+    def get_release_dates(self) -> Dict:
+        """
+        Get release date for each state in SICAR system.
+
+        Returns:
+            Dict: A dict containing state sign as keys and release date as string in dd/mm/yyyy format.
+
+        Raises:
+            FailedToGetReleaseDateException: If the page with release date fails to load.
+        """
+        try:
+            response = self._get(f"{self._RELEASE_DATE}")
+            return self._parse_release_dates(response.content)
+        except UrlNotOkException as error:
+            raise FailedToGetReleaseDateException() from error
