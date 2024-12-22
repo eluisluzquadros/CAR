@@ -11,6 +11,7 @@ from typing import Optional, Dict
 import time
 import random
 from functools import wraps
+import urllib3
 
 def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0):
     """Decorator for implementing retry logic with exponential backoff"""
@@ -18,7 +19,6 @@ def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0):
         @wraps(func)
         def wrapper(*args, **kwargs):
             last_exception = None
-            
             for retry in range(max_retries):
                 try:
                     return func(*args, **kwargs)
@@ -40,36 +40,30 @@ class HttpClient:
     
     def _create_session(self, verify_ssl: bool, timeout: float) -> httpx.Client:
         """Create an HTTP session with appropriate SSL context"""
-        
-        # Configurações do SSL
-        import urllib3
+        # Desabilitar avisos de SSL inseguro
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
+        # Criar o transporte HTTP
         transport = httpx.HTTPTransport(
             verify=False,
-            retries=3,
-            pool_limits=httpx.Limits(
-                max_keepalive_connections=5,
-                max_connections=10,
-                keepalive_expiry=5.0
-            )
+            retries=3
         )
         
+        # Criar o cliente com configurações apropriadas
         return httpx.Client(
             transport=transport,
             timeout=timeout,
             follow_redirects=True,
-            verify=False  # Desabilitando verificação SSL
+            verify=False
         )
     
     def _set_default_headers(self):
         """Set default headers for all requests"""
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Connection": "keep-alive"
         })
     
     def set_headers(self, headers: Optional[Dict] = None):
