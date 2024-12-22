@@ -1,3 +1,34 @@
+"""
+SICAR Class Module.
+"""
+
+import io
+import os
+import time
+import random
+from PIL import Image
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+from typing import Dict
+from pathlib import Path
+from urllib.parse import urlencode
+
+from SICAR.http_client import HttpClient
+from SICAR.drivers import Captcha, Tesseract
+from SICAR.state import State
+from SICAR.url import Url  # Adicione esta importação
+from SICAR.polygon import Polygon
+from SICAR.exceptions import (
+    UrlNotOkException,
+    PolygonNotValidException,
+    StateCodeNotValidException,
+    FailedToDownloadCaptchaException,
+    FailedToDownloadPolygonException,
+    FailedToGetReleaseDateException,
+)
+
+
+
 class Sicar(Url):
     def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
         self._driver = driver()
