@@ -8,6 +8,8 @@ import io
 import os
 import time
 import random
+import asyncio
+import logging
 from PIL import Image
 from bs4 import BeautifulSoup
 from tqdm import tqdm
@@ -21,197 +23,241 @@ from SICAR.state import State
 from SICAR.url import Url
 from SICAR.polygon import Polygon
 from SICAR.exceptions import (
-    UrlNotOkException,
-    PolygonNotValidException,
-    StateCodeNotValidException,
-    FailedToDownloadCaptchaException,
-    FailedToDownloadPolygonException,
-    FailedToGetReleaseDateException,
+   UrlNotOkException,
+   PolygonNotValidException,
+   StateCodeNotValidException,
+   FailedToDownloadCaptchaException,
+   FailedToDownloadPolygonException,
+   FailedToGetReleaseDateException,
 )
 
 class Sicar(Url):
-    def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
-        self._driver = driver()
-        self._client = HttpClient(verify_ssl=False)
-        self._client.set_headers(headers)
-        self._initialize_cookies()
+   def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
+       """Initialize Sicar instance with async HTTP client"""
+       self._driver = driver()
+       self._client = None
+       self._headers = headers
+       self._loop = asyncio.get_event_loop()
+       self._logger = logging.getLogger(self.__class__.__name__)
 
-    def get_release_dates(self) -> Dict:
-        """Get release date for each state in SICAR system."""
-        try:
-            response = self._client.get(self._RELEASE_DATE)
-            return self._parse_release_dates(response.content)
-        except Exception as error:
-            raise FailedToGetReleaseDateException() from error
+   async def _init_client(self):
+       """Initialize HTTP client if not already initialized"""
+       if not self._client:
+           self._client = HttpClient(verify_ssl=False)
+           await self._client.create_session()
+           if self._headers:
+               self._client.set_headers(self._headers)
+           await self._initialize_cookies()
 
-    def _parse_release_dates(self, response: bytes) -> Dict:
-        """Parse raw html getting states and release date."""
-        try:
-            html_content = response.decode("utf-8")
-            soup = BeautifulSoup(html_content, "html.parser")
-            state_dates = {}
+   async def _initialize_cookies(self):
+       """Initialize session cookies"""
+       try:
+           await self._client.get(self._INDEX)
+       except Exception as e:
+           self._logger.warning(f"Cookie initialization failed: {str(e)}")
 
-            for state_block in soup.find_all("div", class_="listagem-estados"):
-                button_tag = state_block.find(
-                    "button", class_="btn-abrir-modal-download-base-poligono"
-                )
-                state = button_tag.get("data-estado") if button_tag else None
+   async def _download_captcha(self) -> Image:
+       """Download captcha image asynchronously"""
+       try:
+           url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
+           headers = {
+               'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+               'Sec-Fetch-Dest': 'image',
+               'Sec-Fetch-Mode': 'no-cors',
+               'Sec-Fetch-Site': 'same-origin'
+           }
 
-                date_tag = state_block.find("div", class_="data-disponibilizacao")
-                date = date_tag.get_text(strip=True) if date_tag else None
+           response = await self._client.get(url, headers=headers)
+           content = await response.read()
+           return Image.open(io.BytesIO(content))
 
-                if state in iter(State) and date:
-                    state_dates[State(state)] = date
+       except Exception as error:
+           self._logger.error(f"Failed to download captcha: {str(error)}")
+           raise FailedToDownloadCaptchaException() from error
 
-            return state_dates
-        except Exception as e:
-            raise FailedToGetReleaseDateException() from e
+   async def _download_polygon(
+       self,
+       state: State,
+       polygon: Polygon,
+       captcha: str,
+       folder: str,
+       chunk_size: int = 1024
+   ) -> Path:
+       """Download polygon data asynchronously"""
+       query = urlencode({
+           "idEstado": state.value,
+           "tipoBase": polygon.value,
+           "ReCaptcha": captcha
+       })
+       
+       url = f"{self._DOWNLOAD_BASE}?{query}"
+       
+       try:
+           async with await self._client.stream(url) as response:
+               if response.status != 200:
+                   raise UrlNotOkException(url)
 
-    def _initialize_cookies(self):
-        """Initialize cookies by making the initial request."""
-        try:
-            self._client.get(self._INDEX)
-        except Exception:
-            pass
+               content_length = int(response.headers.get("Content-Length", 0))
+               content_type = response.headers.get("Content-Type", "")
 
-    def _download_captcha(self) -> Image:
-        """Download a captcha image from the SICAR system."""
-        try:
-            url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
-            
-            # Configurar headers específicos para o captcha
-            headers = {
-                'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Connection': 'keep-alive',
-                'Sec-Fetch-Dest': 'image',
-                'Sec-Fetch-Mode': 'no-cors',
-                'Sec-Fetch-Site': 'same-origin',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            # Tentar download com retry
-            for attempt in range(3):
-                try:
-                    response = self._client.get(url, headers=headers, timeout=30.0)
-                    if response.status_code == 200:
-                        try:
-                            return Image.open(io.BytesIO(response.content))
-                        except Exception as img_error:
-                            print(f"Erro ao processar imagem: {str(img_error)}")
-                            raise
-                except Exception as e:
-                    print(f"Tentativa {attempt + 1} falhou: {str(e)}")
-                    if attempt < 2:  # Se não for a última tentativa
-                        time.sleep(2 * (attempt + 1))  # Espera progressiva
-                    continue
-            
-            raise FailedToDownloadCaptchaException()
-            
-        except Exception as error:
-            print(f"Erro ao baixar captcha: {str(error)}")
-            raise FailedToDownloadCaptchaException() from error
+               if content_length == 0 or not content_type.startswith("application/zip"):
+                   raise FailedToDownloadPolygonException()
 
-    def _download_polygon(self, state: State, polygon: Polygon, captcha: str, 
-                         folder: str, chunk_size: int = 1024) -> Path:
-        """Download polygon for the specified state."""
-        query = urlencode({
-            "idEstado": state.value,
-            "tipoBase": polygon.value,
-            "ReCaptcha": captcha
-        })
-        
-        url = f"{self._DOWNLOAD_BASE}?{query}"
-        
-        try:
-            with self._client.stream(url) as response:
-                if response.status_code != 200:
-                    raise UrlNotOkException(url)
+               path = Path(os.path.join(folder, f"{state.value}_{polygon.value}")).with_suffix(".zip")
+               
+               with open(path, "wb") as fd, tqdm(
+                   total=content_length,
+                   unit="iB",
+                   unit_scale=True,
+                   desc=f"Downloading polygon '{polygon.value}' for state '{state.value}'"
+               ) as progress_bar:
+                   async for chunk in response.content.iter_chunked(chunk_size):
+                       if chunk:
+                           fd.write(chunk)
+                           progress_bar.update(len(chunk))
+               
+               return path
+               
+       except Exception as error:
+           self._logger.error(f"Failed to download polygon: {str(error)}")
+           raise FailedToDownloadPolygonException() from error
 
-                content_length = int(response.headers.get("Content-Length", 0))
-                content_type = response.headers.get("Content-Type", "")
+   async def get_release_dates_async(self) -> Dict:
+       """Get release dates asynchronously"""
+       await self._init_client()
+       try:
+           response = await self._client.get(self._RELEASE_DATE)
+           content = await response.read()
+           return self._parse_release_dates(content)
+       except Exception as error:
+           raise FailedToGetReleaseDateException() from error
 
-                if content_length == 0 or not content_type.startswith("application/zip"):
-                    raise FailedToDownloadPolygonException()
+   def _parse_release_dates(self, response: bytes) -> Dict:
+       """Parse release dates from response"""
+       try:
+           html_content = response.decode("utf-8")
+           soup = BeautifulSoup(html_content, "html.parser")
+           state_dates = {}
 
-                path = Path(os.path.join(folder, f"{state.value}_{polygon.value}")).with_suffix(".zip")
-                
-                with open(path, "wb") as fd, tqdm(
-                    total=content_length,
-                    unit="iB",
-                    unit_scale=True,
-                    desc=f"Downloading polygon '{polygon.value}' for state '{state.value}'"
-                ) as progress_bar:
-                    for chunk in response.iter_bytes(chunk_size=chunk_size):
-                        if chunk:
-                            fd.write(chunk)
-                            progress_bar.update(len(chunk))
-                
-                return path
-        except Exception as error:
-            raise FailedToDownloadPolygonException() from error
+           for state_block in soup.find_all("div", class_="listagem-estados"):
+               button_tag = state_block.find(
+                   "button", class_="btn-abrir-modal-download-base-poligono"
+               )
+               state = button_tag.get("data-estado") if button_tag else None
 
-    def download_state(self, state: State | str, polygon: Polygon | str, 
-                      folder: Path | str = Path("temp"), tries: int = 25,
-                      debug: bool = False, chunk_size: int = 1024) -> Path | bool:
-        """Download the polygon for the specified state."""
-        if isinstance(state, str):
-            try:
-                state = State(state.upper())
-            except ValueError as error:
-                raise StateCodeNotValidException(state) from error
+               date_tag = state_block.find("div", class_="data-disponibilizacao")
+               date = date_tag.get_text(strip=True) if date_tag else None
 
-        if isinstance(polygon, str):
-            try:
-                polygon = Polygon(polygon.upper())
-            except ValueError as error:
-                raise PolygonNotValidException(polygon) from error
+               if state in iter(State) and date:
+                   state_dates[State(state)] = date
 
-        Path(folder).mkdir(parents=True, exist_ok=True)
+           return state_dates
+       except Exception as e:
+           self._logger.error(f"Failed to parse release dates: {str(e)}")
+           raise FailedToGetReleaseDateException() from e
 
-        captcha = ""
-        info = f"'{polygon.value}' for '{state.value}'"
+   async def download_state_async(
+       self,
+       state: State | str,
+       polygon: Polygon | str,
+       folder: Path | str = Path("temp"),
+       tries: int = 25,
+       debug: bool = False,
+       chunk_size: int = 1024
+   ) -> Path | bool:
+       """Download state data asynchronously"""
+       await self._init_client()
 
-        while tries > 0:
-            try:
-                captcha = self._driver.get_captcha(self._download_captcha())
+       if isinstance(state, str):
+           try:
+               state = State(state.upper())
+           except ValueError as error:
+               raise StateCodeNotValidException(state) from error
 
-                if len(captcha) == 5:
-                    if debug:
-                        print(f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'")
+       if isinstance(polygon, str):
+           try:
+               polygon = Polygon(polygon.upper())
+           except ValueError as error:
+               raise PolygonNotValidException(polygon) from error
 
-                    return self._download_polygon(
-                        state=state,
-                        polygon=polygon,
-                        captcha=captcha,
-                        folder=folder,
-                        chunk_size=chunk_size,
-                    )
-                elif debug:
-                    print(f"[{tries:02d}] - Invalid captcha '{captcha}' to request {info}")
-            except (FailedToDownloadCaptchaException, FailedToDownloadPolygonException) as error:
-                if debug:
-                    print(f"[{tries:02d}] - {error} When requesting {info}")
-            finally:
-                tries -= 1
-                time.sleep(random.random() + random.random())
+       Path(folder).mkdir(parents=True, exist_ok=True)
 
-        return False
+       captcha = ""
+       info = f"'{polygon.value}' for '{state.value}'"
 
-    def download_country(self, polygon: Polygon | str, folder: Path | str = Path("brazil"),
-                        tries: int = 25, debug: bool = False, chunk_size: int = 1024):
-        """Download polygon for the entire country."""
-        result = {}
-        for state in State:
-            Path(os.path.join(folder, f"{state}")).mkdir(parents=True, exist_ok=True)
+       while tries > 0:
+           try:
+               captcha_image = await self._download_captcha()
+               captcha = self._driver.get_captcha(captcha_image)
 
-            result[str(state)] = self.download_state(
-                state=state,
-                polygon=polygon,
-                folder=folder,
-                tries=tries,
-                debug=debug,
-                chunk_size=chunk_size,
-            )
-        return result
+               if len(captcha) == 5:
+                   if debug:
+                       print(f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'")
+
+                   return await self._download_polygon(
+                       state=state,
+                       polygon=polygon,
+                       captcha=captcha,
+                       folder=folder,
+                       chunk_size=chunk_size
+                   )
+               elif debug:
+                   print(f"[{tries:02d}] - Invalid captcha '{captcha}' to request {info}")
+           except (FailedToDownloadCaptchaException, FailedToDownloadPolygonException) as error:
+               if debug:
+                   print(f"[{tries:02d}] - {error} When requesting {info}")
+           finally:
+               tries -= 1
+               await asyncio.sleep(random.random() + random.random())
+
+       return False
+
+   async def download_country_async(
+       self,
+       polygon: Polygon | str,
+       folder: Path | str = Path("brazil"),
+       tries: int = 25,
+       debug: bool = False,
+       chunk_size: int = 1024
+   ) -> Dict:
+       """Download country data asynchronously"""
+       result = {}
+       for state in State:
+           state_folder = Path(os.path.join(folder, f"{state}"))
+           state_folder.mkdir(parents=True, exist_ok=True)
+
+           result[str(state)] = await self.download_state_async(
+               state=state,
+               polygon=polygon,
+               folder=state_folder,
+               tries=tries,
+               debug=debug,
+               chunk_size=chunk_size
+           )
+       return result
+
+   # Synchronous wrapper methods
+   def get_release_dates(self) -> Dict:
+       """Synchronous wrapper for get_release_dates_async"""
+       return asyncio.run(self.get_release_dates_async())
+
+   def download_state(self, *args, **kwargs) -> Path | bool:
+       """Synchronous wrapper for download_state_async"""
+       return asyncio.run(self.download_state_async(*args, **kwargs))
+
+   def download_country(self, *args, **kwargs) -> Dict:
+       """Synchronous wrapper for download_country_async"""
+       return asyncio.run(self.download_country_async(*args, **kwargs))
+
+   async def close(self):
+       """Close the HTTP client"""
+       if self._client:
+           await self._client.close()
+
+   def __del__(self):
+       """Cleanup on deletion"""
+       try:
+           if self._client:
+               asyncio.run(self.close())
+       except Exception:
+           pass

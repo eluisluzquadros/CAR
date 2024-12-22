@@ -1,83 +1,86 @@
 """
-HTTP Client Module.
-
-This module provides a custom HTTP client with robust error handling and retry mechanisms.
+Async HTTP Client Module using aiohttp.
 """
 
+import aiohttp
+import asyncio
 import ssl
-import httpx
-import certifi
 from typing import Optional, Dict
-import time
-import random
+import logging
 from functools import wraps
-import urllib3
-
-def retry_with_backoff(max_retries: int = 3, initial_delay: float = 1.0):
-    """Decorator for implementing retry logic with exponential backoff"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            last_exception = None
-            for retry in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    if retry < max_retries - 1:
-                        sleep_time = initial_delay * (2 ** retry) + random.uniform(0, 1)
-                        time.sleep(sleep_time)
-            raise last_exception
-        return wrapper
-    return decorator
 
 class HttpClient:
-    """Custom HTTP client with robust error handling"""
+    """Async HTTP client with custom SSL configuration"""
     
     def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
-        self.session = self._create_session(verify_ssl, timeout)
-        self._set_default_headers()
-    
-    def _create_session(self, verify_ssl: bool, timeout: float) -> httpx.Client:
-        """Create an HTTP session with appropriate SSL context"""
-        # Desabilitar avisos de SSL inseguro
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self._session = None
+        self._headers = self._get_default_headers()
+        self.verify_ssl = verify_ssl
         
-        # Criar o transporte HTTP
-        transport = httpx.HTTPTransport(
-            verify=False,
-            retries=3
+    async def __aenter__(self):
+        await self.create_session()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
+    def _get_default_headers(self) -> Dict:
+        return {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Connection': 'keep-alive'
+        }
+
+    async def create_session(self):
+        """Create aiohttp session with custom SSL context"""
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        connector = aiohttp.TCPConnector(
+            ssl=ssl_context if not self.verify_ssl else True,
+            force_close=True
         )
         
-        # Criar o cliente com configurações apropriadas
-        return httpx.Client(
-            transport=transport,
-            timeout=timeout,
-            follow_redirects=True,
-            verify=False
+        self._session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=self.timeout,
+            headers=self._headers
         )
-    
-    def _set_default_headers(self):
-        """Set default headers for all requests"""
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Connection": "keep-alive"
-        })
-    
+
+    async def close(self):
+        """Close the session"""
+        if self._session:
+            await self._session.close()
+            
     def set_headers(self, headers: Optional[Dict] = None):
-        """Set custom headers for the session"""
+        """Set custom headers"""
         if headers:
-            self.session.headers.update(headers)
-    
-    @retry_with_backoff(max_retries=3)
-    def get(self, url: str, **kwargs):
-        """Perform GET request with retry logic"""
-        response = self.session.get(url, **kwargs)
-        response.raise_for_status()
-        return response
-    
-    def stream(self, url: str, **kwargs):
-        """Create a streaming response"""
-        return self.session.stream("GET", url, **kwargs)
+            self._headers.update(headers)
+            if self._session:
+                self._session.headers.update(headers)
+
+    async def get(self, url: str, **kwargs) -> aiohttp.ClientResponse:
+        """Async GET request with retries"""
+        if not self._session:
+            await self.create_session()
+            
+        max_retries = kwargs.pop('max_retries', 3)
+        for attempt in range(max_retries):
+            try:
+                async with self._session.get(url, **kwargs) as response:
+                    response.raise_for_status()
+                    return response
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+                continue
+
+    async def stream(self, url: str, **kwargs) -> aiohttp.ClientResponse:
+        """Create streaming GET request"""
+        if not self._session:
+            await self.create_session()
+        return await self._session.get(url, **kwargs)
