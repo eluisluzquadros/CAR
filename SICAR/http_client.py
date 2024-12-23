@@ -1,4 +1,3 @@
-# SICAR/http_client.py
 """Async HTTP Client Module using httpx with improved error handling."""
 
 import httpx
@@ -71,10 +70,10 @@ class HttpClient:
                 if attempt == max_retries - 1:
                     raise ConnectionTimeoutException(url) from e
                     
-            except httpx.TLSError as e:
-                self._logger.warning(f"Attempt {attempt + 1} failed with SSL error: {str(e)}")
+            except httpx.HTTPStatusError as e:
+                self._logger.warning(f"Attempt {attempt + 1} failed with HTTP error: {str(e)}")
                 if attempt == max_retries - 1:
-                    raise SSLVerificationException(url) from e
+                    raise UrlNotOkException(url) from e
                     
             except Exception as e:
                 self._logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
@@ -90,7 +89,9 @@ class HttpClient:
             await self.create_session()
             
         try:
-            return await self._session.get(url, **kwargs)
+            response = await self._session.get(url, **kwargs)
+            response.raise_for_status()
+            return response
         except Exception as e:
             self._logger.error(f"Stream request failed: {str(e)}")
             raise
