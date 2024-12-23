@@ -1,10 +1,22 @@
 # Importações necessárias
-from SICAR.sicar import Sicar
-from SICAR.state import State
-from SICAR.polygon import Polygon
+from .http_client import HttpClient
+from .state import State
+from .polygon import Polygon
+from .url import Url
+from .drivers import Captcha, Tesseract
+
+import io
+import os
+import time
+import random
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from PIL import Image
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+from typing import Dict
+from pathlib import Path
+from urllib.parse import urlencode
 
 # Configure logging
 logging.basicConfig(
@@ -12,6 +24,16 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+class Sicar(Url):
+    def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
+        """Initialize Sicar instance with async HTTP client"""
+        self._driver = driver()
+        self._client = None
+        self._headers = headers
+        self._loop = asyncio.get_event_loop()
+        self._logger = logging.getLogger(self.__class__.__name__)
+        super().__init__()  # Call parent class constructor
 
 @asynccontextmanager
 async def get_sicar_client():
