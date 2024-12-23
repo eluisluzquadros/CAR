@@ -1,117 +1,112 @@
-# SICAR/http_client.py
-"""Async HTTP Client Module using aiohttp with custom SSL configuration."""
+"""HTTP Client Module with legacy SSL support."""
 
-import aiohttp
-import asyncio
-import ssl
-from typing import Optional, Dict
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
+import urllib3
 import logging
-from aiohttp.client import ClientTimeout
+from typing import Optional, Dict, Union, BinaryIO
+import os
+from pathlib import Path
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+class LegacySSLAdapter(HTTPAdapter):
+    """SSL Adapter that supports legacy servers"""
+    def init_poolmanager(self, *args, **kwargs):
+        context = create_urllib3_context()
+        context.load_default_certs()
+        context.set_ciphers('DEFAULT@SECLEVEL=1')
+        context.options &= ~0x4  # ssl.OP_NO_SSLv3
+        kwargs['ssl_context'] = context
+        return super().init_poolmanager(*args, **kwargs)
 
 class HttpClient:
-    """Async HTTP client using aiohttp"""
+    """HTTP client with legacy SSL support"""
     
     def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session = self._create_session()
         self._headers = self._get_default_headers()
         self._logger = logging.getLogger(self.__class__.__name__)
-        self._timeout = ClientTimeout(total=timeout)
-        self._ssl_context = self._create_ssl_context()
-
-    def _create_ssl_context(self) -> ssl.SSLContext:
-        """Create a custom SSL context that accepts older protocols."""
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        # Important: must disable hostname check before setting verify mode
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.set_ciphers('DEFAULT:@SECLEVEL=1')
+        self._timeout = timeout
         
-        # Enable older protocols
-        context.options &= ~ssl.OP_NO_TLSv1
-        context.options &= ~ssl.OP_NO_TLSv1_1
-        context.options &= ~ssl.OP_NO_SSLv3
-        
-        return context
-
     def _get_default_headers(self) -> Dict[str, str]:
         """Get browser-like headers."""
         return {
-            "Host": "consultapublica.car.gov.br",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1"
         }
 
-    async def create_session(self):
-        """Create aiohttp session with custom SSL context."""
+    def _create_session(self) -> requests.Session:
+        """Create session with legacy SSL support."""
+        session = requests.Session()
+        adapter = LegacySSLAdapter(max_retries=3)
+        session.mount('https://', adapter)
+        return session
+
+    def get(self, url: str, **kwargs) -> requests.Response:
+        """Perform GET request."""
+        kwargs.setdefault('timeout', self._timeout)
+        kwargs.setdefault('verify', False)
+        kwargs.setdefault('headers', self._headers)
+        
         try:
-            if self._session:
-                await self._session.close()
-                
-            conn = aiohttp.TCPConnector(
-                ssl=self._ssl_context,
-                force_close=True,
-                enable_cleanup_closed=True,
-                ttl_dns_cache=300
-            )
-            
-            self._session = aiohttp.ClientSession(
-                connector=conn,
-                timeout=self._timeout,
-                headers=self._headers,
-                trust_env=True
-            )
+            response = self._session.get(url, **kwargs)
+            response.raise_for_status()
+            return response
         except Exception as e:
-            self._logger.error(f"Failed to create session: {str(e)}")
+            self._logger.error(f"Request failed: {str(e)}")
             raise
 
-    async def get(self, url: str, **kwargs) -> aiohttp.ClientResponse:
-        """Perform GET request with retries."""
-        if not self._session:
-            await self.create_session()
-
-        max_retries = kwargs.pop('max_retries', 3)
-        retry_delay = kwargs.pop('retry_delay', 1)
-        
-        for attempt in range(max_retries):
-            try:
-                async with self._session.get(url, **kwargs) as response:
-                    await response.read()
-                    return response
-            except Exception as e:
-                self._logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt == max_retries - 1:
-                    raise
-                await asyncio.sleep(retry_delay * (attempt + 1))
-                await self.create_session()
-
-    async def stream(self, url: str, **kwargs) -> aiohttp.ClientResponse:
-        """Create streaming GET request."""
-        if not self._session:
-            await self.create_session()
-            
-        return await self._session.get(url, **kwargs)
+    def stream_download(self, url: str, output_path: Union[str, Path], **kwargs) -> bool:
+        """Download file with progress tracking."""
+        try:
+            with self._session.get(
+                url,
+                stream=True,
+                verify=False,
+                headers=self._headers,
+                timeout=self._timeout,
+                **kwargs
+            ) as response:
+                response.raise_for_status()
+                
+                # Ensure directory exists
+                output_path = Path(output_path)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Download with progress tracking
+                total = int(response.headers.get('content-length', 0))
+                
+                with open(output_path, 'wb') as f:
+                    if total:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                    else:
+                        f.write(response.content)
+                        
+                return True
+                
+        except Exception as e:
+            self._logger.error(f"Download failed: {str(e)}")
+            if output_path.exists():
+                output_path.unlink()
+            return False
 
     def set_headers(self, headers: Optional[Dict[str, str]] = None):
         """Set custom headers."""
         if headers:
             self._headers.update(headers)
-            if self._session:
-                self._session.headers.update(headers)
+            self._session.headers.update(headers)
 
-    async def close(self):
+    def close(self):
         """Close the session."""
         if self._session:
-            try:
-                await self._session.close()
-                self._session = None
-            except Exception as e:
-                self._logger.error(f"Error closing session: {str(e)}")
-                raise
+            self._session.close()
+            self._session = None
