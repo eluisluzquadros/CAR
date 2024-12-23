@@ -1,26 +1,38 @@
+# SICAR/http_client.py
 """HTTP Client Module with legacy SSL support."""
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
+from urllib3.poolmanager import PoolManager
 import urllib3
 import logging
 from typing import Optional, Dict, Union, BinaryIO
 import os
 from pathlib import Path
+import ssl
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class LegacySSLAdapter(HTTPAdapter):
-    """SSL Adapter that supports legacy servers"""
-    def init_poolmanager(self, *args, **kwargs):
-        context = create_urllib3_context()
-        context.load_default_certs()
-        context.set_ciphers('DEFAULT@SECLEVEL=1')
-        context.options &= ~0x4  # ssl.OP_NO_SSLv3
-        kwargs['ssl_context'] = context
-        return super().init_poolmanager(*args, **kwargs)
+class TLSAdapter(HTTPAdapter):
+    def __init__(self, ssl_options=0, **kwargs):
+        self.ssl_options = ssl_options
+        super(TLSAdapter, self).__init__(**kwargs)
+
+    def init_poolmanager(self, *pool_args, **pool_kwargs):
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        # Set the SSL options we want
+        ctx.options |= self.ssl_options
+        
+        # These configurations MUST be done in this order
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.set_ciphers('DEFAULT@SECLEVEL=1')
+        
+        self.poolmanager = PoolManager(*pool_args,
+                                     ssl_context=ctx,
+                                     **pool_kwargs)
 
 class HttpClient:
     """HTTP client with legacy SSL support"""
@@ -39,21 +51,43 @@ class HttpClient:
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Upgrade-Insecure-Requests": "1",
+            "DNT": "1"
         }
 
     def _create_session(self) -> requests.Session:
         """Create session with legacy SSL support."""
         session = requests.Session()
-        adapter = LegacySSLAdapter(max_retries=3)
+        
+        # Create adapter with all SSL options we might need
+        adapter = TLSAdapter(
+            ssl_options=ssl.OP_NO_TLSv1_3 |  # Disable TLS 1.3
+                       ~ssl.OP_NO_TLSv1 |   # Enable TLS 1.0
+                       ~ssl.OP_NO_TLSv1_1 | # Enable TLS 1.1
+                       ~ssl.OP_NO_SSLv3,    # Enable SSL 3
+            pool_maxsize=100,
+            max_retries=3,
+            pool_block=False
+        )
+        
         session.mount('https://', adapter)
+        session.verify = False
         return session
 
     def get(self, url: str, **kwargs) -> requests.Response:
         """Perform GET request."""
         kwargs.setdefault('timeout', self._timeout)
         kwargs.setdefault('verify', False)
-        kwargs.setdefault('headers', self._headers)
+        
+        # Set specific headers for the request type
+        headers = self._headers.copy()
+        if url.endswith('.jpg') or url.endswith('.png') or 'captcha' in url.lower():
+            headers.update({
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'image',
+                'Sec-Fetch-Mode': 'no-cors'
+            })
+        kwargs.setdefault('headers', headers)
         
         try:
             response = self._session.get(url, **kwargs)
@@ -103,7 +137,6 @@ class HttpClient:
         """Set custom headers."""
         if headers:
             self._headers.update(headers)
-            self._session.headers.update(headers)
 
     def close(self):
         """Close the session."""
