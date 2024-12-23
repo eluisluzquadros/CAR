@@ -1,21 +1,17 @@
 # SICAR/http_client.py
-"""Async HTTP Client Module specifically configured for SICAR website."""
+"""Async HTTP Client that simulates browser behavior for SICAR website."""
 
 import httpx
 import asyncio
-import ssl
-import certifi
 from typing import Optional, Dict, Union
 import logging
-from SICAR.exceptions import (
-    UrlNotOkException,
-    ConnectionTimeoutException,
-    SSLVerificationException,
-    SessionClosedException
-)
+import urllib3
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class HttpClient:
-    """Async HTTP client customized for SICAR website access"""
+    """Browser-like HTTP client for SICAR website"""
     
     def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
         self._session: Optional[httpx.AsyncClient] = None
@@ -23,137 +19,103 @@ class HttpClient:
         self._logger = logging.getLogger(self.__class__.__name__)
         self._verify = verify_ssl
         self._timeout = timeout
-        
-        # Create SSL context specifically for SICAR
-        self._ssl_context = self._create_ssl_context()
-
-    def _create_ssl_context(self) -> ssl.SSLContext:
-        """Create a custom SSL context for SICAR website."""
-        context = ssl.create_default_context(cafile=certifi.where())
-        context.set_ciphers('DEFAULT@SECLEVEL=1')  # Allow older ciphers
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        # Enable all SSL/TLS versions
-        context.options &= ~ssl.OP_NO_SSLv3
-        context.options &= ~ssl.OP_NO_TLSv1
-        context.options &= ~ssl.OP_NO_TLSv1_1
-        return context
 
     def _get_default_headers(self) -> Dict[str, str]:
-        """Get headers specifically formatted for SICAR website."""
+        """Get browser-like headers."""
         return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Host": "consultapublica.car.gov.br",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-User": "?1",
             "Sec-Fetch-Dest": "document",
-            "Cache-Control": "max-age=0"
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Pragma": "no-cache",
+            "Cache-Control": "no-cache"
         }
 
     async def create_session(self):
-        """Create session with SICAR-specific configurations."""
+        """Create browser-like session."""
         try:
             if self._session:
                 await self._session.aclose()
-            
-            # Custom transport with retry logic
+
             transport = httpx.AsyncHTTPTransport(
                 verify=False,
-                retries=3,
-                trust_env=True,
-                http2=False  # Disable HTTP/2 as it might cause issues
+                retries=1  # Reduced retries as we'll handle them manually
             )
             
             self._session = httpx.AsyncClient(
-                verify=False,
+                transport=transport,
                 timeout=self._timeout,
                 headers=self._headers,
                 follow_redirects=True,
-                transport=transport
+                http2=False
             )
-            self._logger.debug("Created new HTTP session")
+            
+            self._logger.debug("Created new session")
         except Exception as e:
-            self._logger.error(f"Failed to create session: {str(e)}")
+            self._logger.error(f"Session creation failed: {str(e)}")
             raise
 
+    def _get_image_headers(self) -> Dict[str, str]:
+        """Get headers specific for image downloads."""
+        return {
+            **self._headers,
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors"
+        }
+
+    def _get_download_headers(self) -> Dict[str, str]:
+        """Get headers specific for file downloads."""
+        return {
+            **self._headers,
+            "Accept": "application/zip,application/octet-stream",
+            "Sec-Fetch-Dest": "download",
+            "Sec-Fetch-Mode": "navigate"
+        }
+
     async def get(self, url: str, **kwargs) -> httpx.Response:
-        """Perform GET request with SICAR-specific retry logic."""
+        """Perform GET request with browser-like behavior."""
         if not self._session:
             await self.create_session()
 
         max_retries = kwargs.pop('max_retries', 3)
-        retry_delay = kwargs.pop('retry_delay', 2)  # Increased delay
+        retry_delay = kwargs.pop('retry_delay', 1)
+        is_image = kwargs.pop('is_image', False)
+        is_download = kwargs.pop('is_download', False)
+        
+        # Set appropriate headers based on request type
+        if is_image:
+            self._session.headers.update(self._get_image_headers())
+        elif is_download:
+            self._session.headers.update(self._get_download_headers())
         
         for attempt in range(max_retries):
             try:
                 response = await self._session.get(url, **kwargs)
                 response.raise_for_status()
                 return response
-                
-            except httpx.TimeoutException as e:
-                self._logger.warning(f"Attempt {attempt + 1} failed with timeout: {str(e)}")
-                if attempt == max_retries - 1:
-                    raise ConnectionTimeoutException(url) from e
-                    
-            except httpx.HTTPStatusError as e:
-                self._logger.warning(f"Attempt {attempt + 1} failed with HTTP error: {str(e)}")
-                if attempt == max_retries - 1:
-                    raise UrlNotOkException(url) from e
-                    
             except Exception as e:
                 self._logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt == max_retries - 1:
                     raise
-                    
-            # Exponential backoff
-            await asyncio.sleep(retry_delay * (2 ** attempt))
-            await self.create_session()
+                await asyncio.sleep(retry_delay * (2 ** attempt))
+                await self.create_session()
 
     async def stream(self, url: str, **kwargs) -> httpx.Response:
-        """Stream request with proper error handling for SICAR downloads."""
-        if not self._session:
-            await self.create_session()
-            
-        try:
-            response = await self._session.get(url, **kwargs)
-            response.raise_for_status()
-            return response
-        except Exception as e:
-            self._logger.error(f"Stream request failed: {str(e)}")
-            raise
-
-    def set_headers(self, headers: Optional[Dict[str, str]] = None):
-        """Update headers while preserving essential SICAR headers."""
-        if not headers:
-            return
-            
-        if not isinstance(headers, dict):
-            raise ValueError("Headers must be a dictionary")
-            
-        # Preserve essential SICAR headers
-        essential_headers = {
-            k: v for k, v in self._headers.items() 
-            if k in ['User-Agent', 'Accept-Language', 'Connection']
-        }
-        
-        self._headers.update(headers)
-        self._headers.update(essential_headers)
-        
-        if self._session:
-            self._session.headers.update(self._headers)
+        """Stream request with browser-like behavior."""
+        kwargs['is_download'] = True
+        return await self.get(url, **kwargs)
 
     async def close(self):
-        """Safely close the session."""
+        """Close session."""
         if self._session:
-            try:
-                await self._session.aclose()
-                self._session = None
-                self._logger.debug("Session closed successfully")
-            except Exception as e:
-                self._logger.error(f"Error closing session: {str(e)}")
-                raise
+            await self._session.aclose()
+            self._session = None

@@ -37,7 +37,7 @@ class Sicar(Url):
     """Class representing the Sicar system for managing environmental rural properties in Brazil."""
 
     def __init__(self, driver: Captcha = Tesseract, headers: Optional[Dict] = None):
-        """Initialize Sicar instance with async HTTP client."""
+        """Initialize Sicar instance."""
         super().__init__()
         self._driver = driver()
         self._client = None
@@ -45,21 +45,25 @@ class Sicar(Url):
         self._logger = logging.getLogger(self.__class__.__name__)
 
     async def _init_client(self):
-        """Initialize HTTP client if not already initialized."""
-        if not self._client:
-            self._client = HttpClient(verify_ssl=False)
-            await self._client.create_session()
-            if self._headers:
-                self._client.set_headers(self._headers)
-            await self._initialize_cookies()
+        """Initialize HTTP client with retry logic."""
+        try:
+            if not self._client:
+                self._client = HttpClient(verify_ssl=False)
+                await self._client.create_session()
+                if self._headers:
+                    self._client.set_headers(self._headers)
+                await self._initialize_cookies()
+        except Exception as e:
+            self._logger.error(f"Failed to initialize client: {str(e)}")
+            raise
 
     async def _initialize_cookies(self):
-        """Initialize session cookies."""
+        """Initialize session cookies and get initial page."""
         try:
-            response = await self._client.get(self._INDEX)
+            await self._client.get(self._INDEX)
             self._logger.debug("Cookies initialized successfully")
         except Exception as e:
-            self._logger.warning(f"Cookie initialization failed: {str(e)}")
+            self._logger.error(f"Cookie initialization failed: {str(e)}")
             raise
 
     @asynccontextmanager
@@ -69,32 +73,38 @@ class Sicar(Url):
             await self._init_client()
             yield self
         finally:
-            await self.close()
+            if self._client:
+                await self.close()
+
+    async def _get_download_token(self, state: State) -> Optional[str]:
+        """Get download token for state by parsing the downloads page."""
+        try:
+            response = await self._client.get(self._RELEASE_DATE)
+            content = await response.aread()
+            soup = BeautifulSoup(content.decode('utf-8'), 'html.parser')
+            
+            # Find the button for the specific state
+            button = soup.find('button', {
+                'class': 'btn-abrir-modal-download-base-poligono',
+                'data-estado': state.value
+            })
+            
+            if button:
+                return button.get('data-token')  # Modify based on actual token attribute
+            return None
+            
+        except Exception as e:
+            self._logger.error(f"Failed to get download token: {str(e)}")
+            return None
 
     async def _download_captcha(self) -> Image:
-        """
-        Download a captcha image from the SICAR system.
-
-        Returns:
-            Image: The captcha image.
-
-        Raises:
-            FailedToDownloadCaptchaException: If the captcha image fails to download.
-        """
+        """Download captcha with browser-like behavior."""
         try:
+            # Add random parameter to avoid caching
             url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
             
-            # Set specific headers for image download
-            image_headers = {
-                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
-                "Sec-Fetch-Dest": "image",
-                "Sec-Fetch-Mode": "no-cors",
-                "Sec-Fetch-Site": "same-origin"
-            }
-            self._client.set_headers(image_headers)
-            
-            response = await self._client.get(url)
-            content = await response.read()
+            response = await self._client.get(url, is_image=True)
+            content = await response.aread()
             
             try:
                 captcha = Image.open(io.BytesIO(content))
@@ -102,7 +112,7 @@ class Sicar(Url):
                     captcha = captcha.convert('RGB')
                 return captcha
             except UnidentifiedImageError as img_error:
-                self._logger.error(f"Failed to process image data: {str(img_error)}")
+                self._logger.error(f"Failed to process captcha image: {str(img_error)}")
                 raise FailedToDownloadCaptchaException() from img_error
                 
         except Exception as error:
@@ -117,16 +127,23 @@ class Sicar(Url):
         folder: str,
         chunk_size: int = 1024,
     ) -> Path:
-        """Download polygon data for the specified state."""
-        query = urlencode({
-            "idEstado": state.value,
-            "tipoBase": polygon.value,
-            "ReCaptcha": captcha
-        })
-        
-        url = f"{self._DOWNLOAD_BASE}?{query}"
-        
+        """Download polygon data with proper error handling."""
         try:
+            # Get download token if needed
+            token = await self._get_download_token(state)
+            
+            # Build query parameters
+            params = {
+                "idEstado": state.value,
+                "tipoBase": polygon.value,
+                "ReCaptcha": captcha
+            }
+            if token:
+                params["token"] = token
+                
+            query = urlencode(params)
+            url = f"{self._DOWNLOAD_BASE}?{query}"
+            
             async with await self._client.stream(url) as response:
                 if response.status_code != 200:
                     raise UrlNotOkException(url)
@@ -134,7 +151,7 @@ class Sicar(Url):
                 content_length = int(response.headers.get("Content-Length", 0))
                 content_type = response.headers.get("Content-Type", "")
 
-                if content_length == 0 or not content_type.startswith("application/zip"):
+                if content_length == 0 or not content_type.startswith("application/"):
                     raise FailedToDownloadPolygonException()
 
                 path = Path(os.path.join(folder, f"{state.value}_{polygon.value}")).with_suffix(".zip")
@@ -190,7 +207,7 @@ class Sicar(Url):
 
                 if len(captcha) == 5:
                     if debug:
-                        print(f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'")
+                        self._logger.info(f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'")
 
                     return await self._download_polygon(
                         state=state,
@@ -200,13 +217,15 @@ class Sicar(Url):
                         chunk_size=chunk_size
                     )
                 elif debug:
-                    print(f"[{tries:02d}] - Invalid captcha '{captcha}' to request {info}")
+                    self._logger.warning(f"[{tries:02d}] - Invalid captcha '{captcha}' for {info}")
+                    
             except (FailedToDownloadCaptchaException, FailedToDownloadPolygonException) as error:
                 if debug:
-                    print(f"[{tries:02d}] - {error} When requesting {info}")
+                    self._logger.error(f"[{tries:02d}] - {error} When requesting {info}")
             finally:
                 tries -= 1
-                await asyncio.sleep(random.random() + random.random())
+                # Exponential backoff with jitter
+                await asyncio.sleep(random.uniform(1, 2) * (2 ** (25 - tries)))
 
         return False
 
@@ -235,19 +254,21 @@ class Sicar(Url):
         return result
 
     async def get_release_dates_async(self) -> Dict:
-        """Get release dates with improved error handling."""
+        """Get release dates for all states."""
         try:
             if not self._client:
                 await self._init_client()
                 
             response = await self._client.get(self._RELEASE_DATE)
-            content = await response.read()
+            content = await response.aread()
             return self._parse_release_dates(content)
+            
         except Exception as error:
+            self._logger.error(f"Failed to get release dates: {str(error)}")
             raise FailedToGetReleaseDateException() from error
 
     def _parse_release_dates(self, response: bytes) -> Dict:
-        """Parse release dates from response with validation."""
+        """Parse release dates from HTML response."""
         try:
             html_content = response.decode("utf-8")
             soup = BeautifulSoup(html_content, "html.parser")
@@ -266,6 +287,7 @@ class Sicar(Url):
                     state_dates[State(state)] = date
 
             return state_dates
+            
         except Exception as e:
             self._logger.error(f"Failed to parse release dates: {str(e)}")
             raise
@@ -275,3 +297,11 @@ class Sicar(Url):
         if self._client:
             await self._client.close()
             self._client = None
+
+    def __del__(self):
+        """Cleanup on deletion."""
+        try:
+            if self._client:
+                asyncio.run(self.close())
+        except Exception:
+            pass
