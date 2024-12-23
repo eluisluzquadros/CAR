@@ -1,4 +1,5 @@
 # Importações necessárias
+from contextlib import asynccontextmanager
 from .http_client import HttpClient
 from .state import State
 from .polygon import Polygon
@@ -18,31 +19,40 @@ from typing import Dict
 from pathlib import Path
 from urllib.parse import urlencode
 
+class Sicar(Url):
+    def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
+        """Initialize Sicar instance with async HTTP client"""
+        super().__init__()  # Call parent class constructor first
+        self._driver = driver()
+        self._client = None
+        self._headers = headers
+        self._loop = asyncio.get_event_loop()
+        self._logger = logging.getLogger(self.__class__.__name__)
+
+    @asynccontextmanager
+    async def get_sicar_client(self):
+        """Context manager for handling Sicar client lifecycle"""
+        try:
+            await self._init_client()
+            yield self
+        finally:
+            await self.close()
+
+    async def _init_client(self):
+        """Initialize HTTP client if not already initialized"""
+        if not self._client:
+            self._client = HttpClient(verify_ssl=False)
+            await self._client.create_session()
+            if self._headers:
+                self._client.set_headers(self._headers)
+            await self._initialize_cookies()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-class Sicar(Url):
-    def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
-        """Initialize Sicar instance with async HTTP client"""
-        self._driver = driver()
-        self._client = None
-        self._headers = headers
-        self._loop = asyncio.get_event_loop()
-        self._logger = logging.getLogger(self.__class__.__name__)
-        super().__init__()  # Call parent class constructor
-
-@asynccontextmanager
-async def get_sicar_client():
-    """Context manager for handling Sicar client lifecycle"""
-    sicar = Sicar()
-    try:
-        yield sicar
-    finally:
-        await sicar.close()
 
 async def download_sicar():
     """Main asynchronous function to handle SICAR downloads"""
