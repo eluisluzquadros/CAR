@@ -10,29 +10,35 @@ import logging
 from aiohttp_socks import ProxyConnector
 
 class HttpClient:
-    """Async HTTP client with proxy support"""
+    """Async HTTP client with proxy support and SSL configuration"""
     
     def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self._session = None
         self._headers = self._get_default_headers()
         self._logger = logging.getLogger(self.__class__.__name__)
+        
+        # Create an SSL context that accepts all certificates
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+        # Support older protocols
+        self.ssl_context.set_ciphers('DEFAULT:@SECLEVEL=1')
 
     def _get_default_headers(self) -> Dict:
         return {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1'
         }
 
     async def create_session(self):
-        """Create aiohttp session with proxy"""
-        connector = ProxyConnector.from_url(
-            'socks5://127.0.0.1:9050',  # Usando SOCKS5 (Tor)
-            rdns=True,
-            ssl=False
+        """Create aiohttp session with custom SSL context"""
+        connector = aiohttp.TCPConnector(
+            ssl=self.ssl_context,
+            force_close=True
         )
         
         self._session = aiohttp.ClientSession(
@@ -48,6 +54,7 @@ class HttpClient:
             await self.create_session()
 
         max_retries = kwargs.pop('max_retries', 3)
+        retry_delay = kwargs.pop('retry_delay', 2)
         
         for attempt in range(max_retries):
             try:
@@ -58,7 +65,7 @@ class HttpClient:
                 self._logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt == max_retries - 1:
                     raise
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(retry_delay * (attempt + 1))
                 await self.close()
                 await self.create_session()
 
