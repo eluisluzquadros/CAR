@@ -1,10 +1,8 @@
 """
 SICAR Class Module.
 
-This module defines a class representing the Sicar system for managing environmental rural properties in Brazil.
-
-Classes:
-    Sicar: Class representing the Sicar system.
+This module defines a class representing the Sicar system for managing environmental 
+rural properties in Brazil.
 """
 
 import io
@@ -16,7 +14,7 @@ import logging
 from PIL import Image, UnidentifiedImageError
 from bs4 import BeautifulSoup
 from tqdm import tqdm
-from typing import Dict
+from typing import Dict, Union, Optional
 from pathlib import Path
 from urllib.parse import urlencode
 from contextlib import asynccontextmanager
@@ -36,24 +34,10 @@ from SICAR.exceptions import (
 )
 
 class Sicar(Url):
-    """
-    Class representing the Sicar system.
+    """Class representing the Sicar system for managing environmental rural properties in Brazil."""
 
-    Sicar is a system for managing environmental rural properties in Brazil.
-    It inherits from the Url class to provide access to URLs related to the Sicar system.
-
-    Attributes:
-        _driver (Captcha): The driver used for handling captchas. Default is Tesseract.
-    """
-
-    def __init__(self, driver: Captcha = Tesseract, headers: Dict = None):
-        """
-        Initialize an instance of the Sicar class.
-
-        Parameters:
-            driver (Captcha): The driver used for handling captchas. Default is Tesseract.
-            headers (Dict): Additional headers for HTTP requests. Default is None.
-        """
+    def __init__(self, driver: Captcha = Tesseract, headers: Optional[Dict] = None):
+        """Initialize Sicar instance with async HTTP client."""
         super().__init__()
         self._driver = driver()
         self._client = None
@@ -61,7 +45,7 @@ class Sicar(Url):
         self._logger = logging.getLogger(self.__class__.__name__)
 
     async def _init_client(self):
-        """Initialize HTTP client if not already initialized"""
+        """Initialize HTTP client if not already initialized."""
         if not self._client:
             self._client = HttpClient(verify_ssl=False)
             await self._client.create_session()
@@ -70,15 +54,17 @@ class Sicar(Url):
             await self._initialize_cookies()
 
     async def _initialize_cookies(self):
-        """Initialize session cookies"""
+        """Initialize session cookies."""
         try:
-            await self._client.get(self._INDEX)
+            response = await self._client.get(self._INDEX)
+            self._logger.debug("Cookies initialized successfully")
         except Exception as e:
             self._logger.warning(f"Cookie initialization failed: {str(e)}")
+            raise
 
     @asynccontextmanager
     async def get_sicar_client(self):
-        """Context manager for handling Sicar client lifecycle"""
+        """Context manager for handling Sicar client lifecycle."""
         try:
             await self._init_client()
             yield self
@@ -97,14 +83,30 @@ class Sicar(Url):
         """
         try:
             url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
-            response = await self._client.get(url)
             
-            if response.status != 200:
-                raise FailedToDownloadCaptchaException()
-
+            # Set specific headers for image download
+            image_headers = {
+                "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+                "Sec-Fetch-Dest": "image",
+                "Sec-Fetch-Mode": "no-cors",
+                "Sec-Fetch-Site": "same-origin"
+            }
+            self._client.set_headers(image_headers)
+            
+            response = await self._client.get(url)
             content = await response.read()
-            return Image.open(io.BytesIO(content))
+            
+            try:
+                captcha = Image.open(io.BytesIO(content))
+                if captcha.mode != 'RGB':
+                    captcha = captcha.convert('RGB')
+                return captcha
+            except UnidentifiedImageError as img_error:
+                self._logger.error(f"Failed to process image data: {str(img_error)}")
+                raise FailedToDownloadCaptchaException() from img_error
+                
         except Exception as error:
+            self._logger.error(f"Failed to download captcha: {str(error)}")
             raise FailedToDownloadCaptchaException() from error
 
     async def _download_polygon(
@@ -115,32 +117,19 @@ class Sicar(Url):
         folder: str,
         chunk_size: int = 1024,
     ) -> Path:
-        """
-        Download polygon for the specified state.
-
-        Parameters:
-            state (State): The state for which to download the files.
-            polygon (Polygon): The polygon to download.
-            captcha (str): The captcha value for verification.
-            folder (str): The folder path where the polygon will be saved.
-            chunk_size (int, optional): The size of each chunk to download. Defaults to 1024.
-
-        Returns:
-            Path: The path to the downloaded polygon.
-
-        Raises:
-            FailedToDownloadPolygonException: If the polygon download fails.
-        """
+        """Download polygon data for the specified state."""
         query = urlencode({
             "idEstado": state.value,
             "tipoBase": polygon.value,
             "ReCaptcha": captcha
         })
         
+        url = f"{self._DOWNLOAD_BASE}?{query}"
+        
         try:
-            async with await self._client.stream(f"{self._DOWNLOAD_BASE}?{query}") as response:
-                if response.status != 200:
-                    raise UrlNotOkException(f"{self._DOWNLOAD_BASE}?{query}")
+            async with await self._client.stream(url) as response:
+                if response.status_code != 200:
+                    raise UrlNotOkException(url)
 
                 content_length = int(response.headers.get("Content-Length", 0))
                 content_type = response.headers.get("Content-Type", "")
@@ -156,7 +145,7 @@ class Sicar(Url):
                     unit_scale=True,
                     desc=f"Downloading polygon '{polygon.value}' for state '{state.value}'"
                 ) as progress_bar:
-                    async for chunk in response.content.iter_chunked(chunk_size):
+                    async for chunk in response.aiter_bytes(chunk_size):
                         if chunk:
                             fd.write(chunk)
                             progress_bar.update(len(chunk))
@@ -164,6 +153,7 @@ class Sicar(Url):
                 return path
                 
         except Exception as error:
+            self._logger.error(f"Failed to download polygon: {str(error)}")
             raise FailedToDownloadPolygonException() from error
 
     async def download_state_async(
@@ -175,20 +165,7 @@ class Sicar(Url):
         debug: bool = False,
         chunk_size: int = 1024,
     ) -> Path | bool:
-        """
-        Download the polygon or other output format for the specified state.
-
-        Parameters:
-            state (State | str): The state for which to download the files.
-            polygon (Polygon | str): The polygon to download.
-            folder (Path | str, optional): The folder path where the downloaded data will be saved.
-            tries (int, optional): The number of attempts to download the data.
-            debug (bool, optional): Whether to print debug information.
-            chunk_size (int, optional): The size of each chunk to download.
-
-        Returns:
-            Path | bool: The path to the downloaded data if successful, or False if download fails.
-        """
+        """Download state data with retry logic."""
         if isinstance(state, str):
             try:
                 state = State(state.upper())
@@ -241,19 +218,7 @@ class Sicar(Url):
         debug: bool = False,
         chunk_size: int = 1024,
     ) -> Dict:
-        """
-        Download polygon for the entire country.
-
-        Parameters:
-            polygon (Polygon | str): The polygon to download.
-            folder (Path | str, optional): The folder path where the downloaded files will be saved.
-            tries (int, optional): The number of download attempts allowed per state.
-            debug (bool, optional): Whether to enable debug mode.
-            chunk_size (int, optional): The size of each chunk to download.
-
-        Returns:
-            Dict: A dictionary containing the results of the download operation.
-        """
+        """Download country-wide data with proper error handling."""
         result = {}
         for state in State:
             state_folder = Path(os.path.join(folder, f"{state}"))
@@ -270,18 +235,11 @@ class Sicar(Url):
         return result
 
     async def get_release_dates_async(self) -> Dict:
-        """
-        Get release date for each state in SICAR system.
-
-        Returns:
-            Dict: A dict containing state sign as keys and release date as string.
-
-        Raises:
-            FailedToGetReleaseDateException: If the page with release date fails to load.
-        """
+        """Get release dates with improved error handling."""
         try:
             if not self._client:
                 await self._init_client()
+                
             response = await self._client.get(self._RELEASE_DATE)
             content = await response.read()
             return self._parse_release_dates(content)
@@ -289,7 +247,7 @@ class Sicar(Url):
             raise FailedToGetReleaseDateException() from error
 
     def _parse_release_dates(self, response: bytes) -> Dict:
-        """Parse release dates from response"""
+        """Parse release dates from response with validation."""
         try:
             html_content = response.decode("utf-8")
             soup = BeautifulSoup(html_content, "html.parser")
@@ -313,15 +271,7 @@ class Sicar(Url):
             raise
 
     async def close(self):
-        """Close the HTTP client"""
+        """Close the HTTP client safely."""
         if self._client:
             await self._client.close()
             self._client = None
-
-    def __del__(self):
-        """Cleanup on deletion"""
-        try:
-            if self._client:
-                asyncio.run(self.close())
-        except Exception:
-            pass
