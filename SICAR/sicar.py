@@ -1,9 +1,5 @@
-"""
-SICAR Class Module.
-
-This module defines a class representing the Sicar system for managing environmental 
-rural properties in Brazil.
-"""
+# SICAR/sicar.py
+"""SICAR Class Module for accessing the CAR system."""
 
 import io
 import os
@@ -15,6 +11,7 @@ from tqdm import tqdm
 from typing import Dict, Union, Optional
 from pathlib import Path
 from urllib.parse import urlencode
+import logging
 
 from SICAR.http_client import HttpClient
 from SICAR.drivers import Captcha, Tesseract
@@ -31,22 +28,29 @@ from SICAR.exceptions import (
 )
 
 class Sicar(Url):
-    """Class representing the Sicar system."""
+    """Class representing the SICAR system."""
 
-    def __init__(self, driver: Captcha = Tesseract, headers: Optional[Dict] = None):
-        """Initialize Sicar instance."""
+    def __init__(self, driver: Captcha = Tesseract):
+        """Initialize SICAR instance."""
         super().__init__()
         self._driver = driver()
         self._client = HttpClient()
-        if headers:
-            self._client.set_headers(headers)
+        self._logger = logging.getLogger(self.__class__.__name__)
+        
+        # Set specific headers for captcha requests
+        self._captcha_headers = {
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+            "Sec-Fetch-Dest": "image",
+            "Sec-Fetch-Mode": "no-cors",
+            "Referer": self._INDEX
+        }
 
     def _download_captcha(self) -> Image:
-        """Download captcha image."""
+        """Download and process captcha image."""
         try:
             url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
             
-            response = self._client.get(url)
+            response = self._client.get(url, headers=self._captcha_headers)
             
             try:
                 captcha = Image.open(io.BytesIO(response.content))
@@ -54,9 +58,11 @@ class Sicar(Url):
                     captcha = captcha.convert('RGB')
                 return captcha
             except UnidentifiedImageError as img_error:
+                self._logger.error(f"Failed to process captcha image: {str(img_error)}")
                 raise FailedToDownloadCaptchaException() from img_error
                 
         except Exception as error:
+            self._logger.error(f"Failed to download captcha: {str(error)}")
             raise FailedToDownloadCaptchaException() from error
 
     def _download_polygon(
@@ -66,20 +72,25 @@ class Sicar(Url):
         captcha: str,
         folder: str,
     ) -> Path:
-        """Download polygon data."""
-        params = {
-            "idEstado": state.value,
-            "tipoBase": polygon.value,
-            "ReCaptcha": captcha
-        }
+        """Download polygon data for state."""
+        try:
+            params = {
+                "idEstado": state.value,
+                "tipoBase": polygon.value,
+                "ReCaptcha": captcha
+            }
             
-        query = urlencode(params)
-        url = f"{self._DOWNLOAD_BASE}?{query}"
-        output_path = Path(os.path.join(folder, f"{state.value}_{polygon.value}")).with_suffix(".zip")
-        
-        if self._client.stream_download(url, output_path):
-            return output_path
-        raise FailedToDownloadPolygonException()
+            query = urlencode(params)
+            url = f"{self._DOWNLOAD_BASE}?{query}"
+            output_path = Path(os.path.join(folder, f"{state.value}_{polygon.value}")).with_suffix(".zip")
+            
+            if self._client.download_file(url, output_path):
+                return output_path
+            raise FailedToDownloadPolygonException()
+            
+        except Exception as error:
+            self._logger.error(f"Failed to download polygon: {str(error)}")
+            raise FailedToDownloadPolygonException() from error
 
     def download_state(
         self,
@@ -89,7 +100,7 @@ class Sicar(Url):
         tries: int = 25,
         debug: bool = False,
     ) -> Path | bool:
-        """Download state data."""
+        """Download state data with retry logic."""
         if isinstance(state, str):
             try:
                 state = State(state.upper())
@@ -104,17 +115,16 @@ class Sicar(Url):
 
         Path(folder).mkdir(parents=True, exist_ok=True)
 
-        captcha = ""
         info = f"'{polygon.value}' for '{state.value}'"
-
-        while tries > 0:
+        
+        for attempt in range(tries, 0, -1):
             try:
                 captcha_image = self._download_captcha()
                 captcha = self._driver.get_captcha(captcha_image)
 
                 if len(captcha) == 5:
                     if debug:
-                        print(f"[{tries:02d}] - Requesting {info} with captcha '{captcha}'")
+                        self._logger.info(f"[{attempt:02d}] - Requesting {info} with captcha '{captcha}'")
 
                     return self._download_polygon(
                         state=state,
@@ -123,14 +133,14 @@ class Sicar(Url):
                         folder=folder,
                     )
                 elif debug:
-                    print(f"[{tries:02d}] - Invalid captcha '{captcha}' to request {info}")
+                    self._logger.warning(f"[{attempt:02d}] - Invalid captcha '{captcha}' for {info}")
                     
             except (FailedToDownloadCaptchaException, FailedToDownloadPolygonException) as error:
                 if debug:
-                    print(f"[{tries:02d}] - {error} When requesting {info}")
-            finally:
-                tries -= 1
-                time.sleep(random.uniform(1, 2))
+                    self._logger.error(f"[{attempt:02d}] - {error} When requesting {info}")
+                    
+            # Add random delay between attempts
+            time.sleep(random.uniform(1, 2))
 
         return False
 
@@ -141,7 +151,7 @@ class Sicar(Url):
         tries: int = 25,
         debug: bool = False,
     ) -> Dict:
-        """Download country-wide data."""
+        """Download data for all states."""
         result = {}
         for state in State:
             state_folder = Path(os.path.join(folder, f"{state}"))
@@ -157,7 +167,7 @@ class Sicar(Url):
         return result
 
     def get_release_dates(self) -> Dict:
-        """Get release dates."""
+        """Get state data release dates."""
         try:
             response = self._client.get(self._RELEASE_DATE)
             return self._parse_release_dates(response.content)
@@ -165,7 +175,7 @@ class Sicar(Url):
             raise FailedToGetReleaseDateException() from error
 
     def _parse_release_dates(self, response: bytes) -> Dict:
-        """Parse release dates from response."""
+        """Parse release dates from HTML response."""
         try:
             html_content = response.decode("utf-8")
             soup = BeautifulSoup(html_content, "html.parser")
@@ -185,13 +195,13 @@ class Sicar(Url):
 
             return state_dates
         except Exception as e:
+            self._logger.error(f"Failed to parse release dates: {str(e)}")
             raise FailedToGetReleaseDateException() from e
 
     def close(self):
-        """Close the client."""
+        """Close the client connection."""
         if self._client:
             self._client.close()
-            self._client = None
 
     def __del__(self):
         """Cleanup on deletion."""
