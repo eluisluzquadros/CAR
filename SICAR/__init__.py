@@ -1,8 +1,3 @@
 """SICAR - Tool designed for students, researchers, data scientists or anyone who would like to have access to SICAR files."""
-
-from .sicar import Sicar
-from .state import State
-from .polygon import Polygon
-from .http_client import HttpClient
-
-__all__ = ['Sicar', 'State', 'Polygon', 'HttpClient']
+# This can be empty for now to avoid circular imports
+# We'll let users import directly from the specific modules
