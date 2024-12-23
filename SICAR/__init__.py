@@ -1,27 +1,7 @@
-"""SICAR - Tool designed for students, researchers, data scientists or anyone who would like to have access to SICAR files."""
+# SICAR/drivers/__init__.py
+"""SICAR drivers for captcha processing."""
 
-from .sicar import Sicar
-from .state import State
-from .polygon import Polygon
-from .exceptions import (
-    UrlNotOkException,
-    StateCodeNotValidException,
-    PolygonNotValidException,
-    FailedToDownloadCaptchaException,
-    FailedToDownloadPolygonException,
-    FailedToGetReleaseDateException
-)
+from .captcha import Captcha, CaptchaProcessingError
+from .tesseract import Tesseract
 
-__version__ = '0.0.1'
-
-__all__ = [
-    'Sicar',
-    'State',
-    'Polygon',
-    'UrlNotOkException',
-    'StateCodeNotValidException',
-    'PolygonNotValidException',
-    'FailedToDownloadCaptchaException',
-    'FailedToDownloadPolygonException',
-    'FailedToGetReleaseDateException'
-]
+__all__ = ['Captcha', 'Tesseract', 'CaptchaProcessingError']
