@@ -1,4 +1,4 @@
-# SICAR
+# CAR
 
 This tool is designed for students, researchers, data scientists, or anyone who would like to have access to [SICAR](https://car.gov.br/publico/imoveis/index) files.
 
