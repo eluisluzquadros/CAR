@@ -1,4 +1,4 @@
-# SICAR/sicar.py
+# /content/CAR/SICAR/sicar.py
 """SICAR Class Module for accessing the CAR system."""
 
 import io
@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import logging
 
 from SICAR.http_client import HttpClient
-from SICAR.drivers import Captcha, Tesseract
+from SICAR.drivers import Captcha, Tesseract, Paddle
 from SICAR.state import State
 from SICAR.url import Url
 from SICAR.polygon import Polygon
@@ -30,13 +30,14 @@ from SICAR.exceptions import (
 class Sicar(Url):
     """Class representing the SICAR system."""
 
-    def __init__(self, driver: Captcha = Tesseract):
+    def __init__(self, driver: Captcha = Paddle, debug: bool = False):
         """Initialize SICAR instance."""
         super().__init__()
         self._driver = driver()
         self._client = HttpClient()
         self._logger = logging.getLogger(self.__class__.__name__)
-        
+        self._debug = debug
+
         # Set specific headers for captcha requests
         self._captcha_headers = {
             "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
@@ -73,7 +74,9 @@ class Sicar(Url):
             try:
                 captcha = Image.open(io.BytesIO(response.content))
                 # Save for debugging
-                captcha.save('debug_captcha.png')
+                if self._debug:
+                    os.makedirs('debug', exist_ok=True)
+                    captcha.save('debug/captcha.png')
                 return captcha
             except Exception as img_error:
                 self._logger.error(f"Failed to process image data: {str(img_error)}")
@@ -112,12 +115,11 @@ class Sicar(Url):
 
     def download_state(
         self,
-        state: State | str,
-        polygon: Polygon | str,
-        folder: Path | str = Path("temp"),
-        tries: int = 25,
-        debug: bool = False,
-    ) -> Path | bool:
+        state: Union[State, str],
+        polygon: Union[Polygon, str],
+        folder: Union[Path, str] = Path("temp"),
+        tries: int = 25
+    ) -> Optional[Path]:
         """Download state data with retry logic."""
         if isinstance(state, str):
             try:
@@ -141,7 +143,7 @@ class Sicar(Url):
                 captcha = self._driver.get_captcha(captcha_image)
 
                 if len(captcha) == 5:
-                    if debug:
+                    if self._debug:
                         self._logger.info(f"[{attempt:02d}] - Requesting {info} with captcha '{captcha}'")
 
                     return self._download_polygon(
@@ -150,24 +152,23 @@ class Sicar(Url):
                         captcha=captcha,
                         folder=folder,
                     )
-                elif debug:
+                elif self._debug:
                     self._logger.warning(f"[{attempt:02d}] - Invalid captcha '{captcha}' for {info}")
                     
             except (FailedToDownloadCaptchaException, FailedToDownloadPolygonException) as error:
-                if debug:
+                if self._debug:
                     self._logger.error(f"[{attempt:02d}] - {error} When requesting {info}")
                     
             # Add random delay between attempts
             time.sleep(random.uniform(1, 2))
 
-        return False
+        return None
 
     def download_country(
         self,
-        polygon: Polygon | str,
-        folder: Path | str = Path("brazil"),
-        tries: int = 25,
-        debug: bool = False,
+        polygon: Union[Polygon, str],
+        folder: Union[Path, str] = Path("brazil"),
+        tries: int = 25
     ) -> Dict:
         """Download data for all states."""
         result = {}
@@ -179,8 +180,7 @@ class Sicar(Url):
                 state=state,
                 polygon=polygon,
                 folder=state_folder,
-                tries=tries,
-                debug=debug,
+                tries=tries
             )
         return result
 
@@ -208,7 +208,7 @@ class Sicar(Url):
                 date_tag = state_block.find("div", class_="data-disponibilizacao")
                 date = date_tag.get_text(strip=True) if date_tag else None
 
-                if state in iter(State) and date:
+                if state in [s.value for s in State] and date:
                     state_dates[State(state)] = date
 
             return state_dates

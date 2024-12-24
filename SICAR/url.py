@@ -1,4 +1,4 @@
-# SICAR/url.py
+# /content/CAR/SICAR/url.py
 """
 URL Class Module.
 
@@ -15,7 +15,7 @@ class Url:
     _DOWNLOAD_BASE: ClassVar[str] = f"{_BASE}/estados/downloadBase"
     _RELEASE_DATE: ClassVar[str] = f"{_BASE}/estados/downloads"
     _RECAPTCHA_BASE: ClassVar[str] = f"{_BASE}/municipios/ReCaptcha"
-    
+
 
     @classmethod
     def get_base_url(cls) -> str:
@@ -31,13 +31,21 @@ class Url:
     def get_download_base_url(cls) -> str:
         """Get the URL for downloading base data."""
         return cls._DOWNLOAD_BASE
-
-    @classmethod
-    def get_recaptcha_url(cls, captcha_id: str) -> str:
-        """Get URL for captcha with specific ID."""
-        return f"{cls._RECAPTCHA_BASE}?id={captcha_id}"
-
+    
     @classmethod
     def get_release_date_url(cls) -> str:
         """Get the URL for release dates."""
         return cls._RELEASE_DATE
+
+    @classmethod
+    def get_recaptcha_url(cls, captcha_id: str) -> str:
+        """
+        Get URL for captcha with specific ID.
+
+        Args:
+            captcha_id: The ID of the captcha.
+
+        Returns:
+            The URL for the captcha image.
+        """
+        return f"{cls._RECAPTCHA_BASE}?id={captcha_id}"

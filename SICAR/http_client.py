@@ -39,6 +39,7 @@ class HttpClient:
         self._base_headers = self._get_default_headers()
         self._logger = logging.getLogger(self.__class__.__name__)
         self._timeout = timeout
+        self._verify_ssl = verify_ssl
         self._initialize_session()
 
     def _get_default_headers(self) -> Dict[str, str]:
@@ -65,7 +66,7 @@ class HttpClient:
         self._session = requests.Session()
         adapter = TLSAdapter(max_retries=3)
         self._session.mount('https://', adapter)
-        self._session.verify = False
+        self._session.verify = self._verify_ssl
         self._session.headers.update(self._base_headers)
 
     def get(self, url: str, **kwargs) -> requests.Response:
@@ -87,7 +88,7 @@ class HttpClient:
                 url,
                 headers=headers,
                 timeout=self._timeout,
-                verify=False,
+                verify=self._verify_ssl,
                 allow_redirects=True,
                 **kwargs
             )
