@@ -46,29 +46,37 @@ class Sicar(Url):
         }
 
     def _download_captcha(self) -> Image:
-        """Download and process captcha image."""
+        """Download and process captcha image with proper session handling."""
         try:
-            # Add random ID to avoid caching
-            random_id = int(random.random() * 1000000)
-            url = f"{self._RECAPTCHA}?{urlencode({'id': random_id})}"
+            # First visit the index page to ensure session is initialized
+            self._client.get(self._INDEX)
             
-            # Set specific headers for image
+            # Set captcha-specific headers
             headers = {
                 'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
                 'Sec-Fetch-Dest': 'image',
                 'Sec-Fetch-Mode': 'no-cors',
                 'Sec-Fetch-Site': 'same-origin',
-                'Referer': self._INDEX
+                'Referer': self._INDEX,
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache'
             }
             
-            # Make the request
-            self._logger.debug(f"Downloading captcha from URL: {url}")
-            response = self._client.get(url, headers=headers)
+            # Add random parameter to avoid caching
+            random_id = int(random.random() * 1000000)
+            url = f"{self._RECAPTCHA}?{urlencode({'id': random_id})}"
             
-            # Log response details
-            self._logger.debug(f"Response status: {response.status_code}")
-            self._logger.debug(f"Response headers: {response.headers}")
-            self._logger.debug(f"Content length: {len(response.content)}")
+            # Use session-aware request
+            response = self._client.get_with_session_check(
+                url=url,
+                index_url=self._INDEX,
+                headers=headers
+            )
+            
+            # Verify response
+            if response.headers.get('Content-Type', '').startswith('text/html'):
+                self._logger.error("Received HTML instead of image")
+                raise FailedToDownloadCaptchaException("Received HTML instead of image")
             
             # Save raw response for debugging
             with open('raw_captcha.bin', 'wb') as f:
@@ -92,7 +100,6 @@ class Sicar(Url):
                 
             except Exception as img_error:
                 self._logger.error(f"Failed to process image data: {str(img_error)}")
-                self._logger.error(f"Content-Type: {response.headers.get('Content-Type')}")
                 raise FailedToDownloadCaptchaException() from img_error
                 
         except Exception as error:

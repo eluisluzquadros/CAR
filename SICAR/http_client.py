@@ -1,5 +1,5 @@
 # SICAR/http_client.py
-"""HTTP Client Module with legacy SSL support."""
+"""Enhanced HTTP Client Module with session management."""
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -8,6 +8,8 @@ import logging
 from typing import Optional, Dict, Union
 from pathlib import Path
 import ssl
+import time
+import random
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -30,13 +32,14 @@ class TLSAdapter(HTTPAdapter):
         )
 
 class HttpClient:
-    """HTTP client with legacy SSL support"""
+    """HTTP client with proper session management"""
     
     def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
-        self._session = self._create_session()
+        self._session = None
         self._base_headers = self._get_default_headers()
         self._logger = logging.getLogger(self.__class__.__name__)
         self._timeout = timeout
+        self._initialize_session()
 
     def _get_default_headers(self) -> Dict[str, str]:
         """Get browser-like headers."""
@@ -45,42 +48,76 @@ class HttpClient:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
+            "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-User": "?1",
+            "Sec-Fetch-Dest": "document"
         }
 
-    def _create_session(self) -> requests.Session:
-        """Create session with legacy SSL support."""
-        session = requests.Session()
+    def _initialize_session(self):
+        """Initialize a new session."""
+        if self._session:
+            self._session.close()
+        
+        self._session = requests.Session()
         adapter = TLSAdapter(max_retries=3)
-        session.mount('https://', adapter)
-        session.verify = False
-        return session
+        self._session.mount('https://', adapter)
+        self._session.verify = False
+        self._session.headers.update(self._base_headers)
 
     def get(self, url: str, **kwargs) -> requests.Response:
-        """Perform GET request with proper header handling."""
+        """Perform GET request with proper session handling."""
+        if not self._session:
+            self._initialize_session()
+
         try:
-            # Start with base headers
+            # Prepare headers
             headers = self._base_headers.copy()
-            
-            # Update with any custom headers passed to the method
             if 'headers' in kwargs:
                 headers.update(kwargs.pop('headers'))
-            
-            # Make the request with combined headers
+
+            # Add random delay
+            time.sleep(random.uniform(0.5, 1.5))
+
+            # Make request
             response = self._session.get(
                 url,
                 headers=headers,
                 timeout=self._timeout,
                 verify=False,
+                allow_redirects=True,
                 **kwargs
             )
+
+            # Debug info
+            self._logger.debug(f"URL: {url}")
+            self._logger.debug(f"Status Code: {response.status_code}")
+            self._logger.debug(f"Headers: {response.headers}")
+
             response.raise_for_status()
             return response
-            
-        except Exception as e:
+
+        except requests.RequestException as e:
             self._logger.error(f"Request failed: {str(e)}")
+            # Try to reinitialize session on failure
+            self._initialize_session()
             raise
+
+    def get_with_session_check(self, url: str, index_url: str, **kwargs) -> requests.Response:
+        """GET with session validation."""
+        try:
+            # First try direct request
+            return self.get(url, **kwargs)
+        except:
+            # On failure, try to reinitialize session via index page
+            self._logger.info("Reinitializing session...")
+            self._initialize_session()
+            self.get(index_url)  # Get index page to initialize session
+            time.sleep(1)  # Small delay
+            return self.get(url, **kwargs)  # Retry original request
 
     def download_file(self, url: str, output_path: Union[str, Path], **kwargs) -> bool:
         """Download file with progress tracking."""
@@ -106,8 +143,11 @@ class HttpClient:
         """Update base headers."""
         if headers:
             self._base_headers.update(headers)
+            if self._session:
+                self._session.headers.update(headers)
 
     def close(self):
         """Close the session."""
         if self._session:
             self._session.close()
+            self._session = None
