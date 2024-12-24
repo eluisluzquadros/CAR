@@ -1,3 +1,4 @@
+# SICAR/url.py
 """
 URL Class Module.
 
@@ -8,12 +9,13 @@ from typing import ClassVar
 class Url:
     """Class representing CAR URLs for various resources."""
 
-    # Class variables with type hints
+    # Base URLs
     _BASE: ClassVar[str] = "https://consultapublica.car.gov.br/publico"
     _INDEX: ClassVar[str] = f"{_BASE}/imoveis/index"
     _DOWNLOAD_BASE: ClassVar[str] = f"{_BASE}/estados/downloadBase"
-    _RECAPTCHA: ClassVar[str] = f"{_BASE}/municipios/ReCaptcha"
     _RELEASE_DATE: ClassVar[str] = f"{_BASE}/estados/downloads"
+    _RECAPTCHA_BASE: ClassVar[str] = f"{_BASE}/municipios/ReCaptcha"
+    
 
     @classmethod
     def get_base_url(cls) -> str:
@@ -31,9 +33,9 @@ class Url:
         return cls._DOWNLOAD_BASE
 
     @classmethod
-    def get_recaptcha_url(cls) -> str:
-        """Get the URL for captcha requests."""
-        return cls._RECAPTCHA
+    def get_recaptcha_url(cls, captcha_id: str) -> str:
+        """Get URL for captcha with specific ID."""
+        return f"{cls._RECAPTCHA_BASE}?id={captcha_id}"
 
     @classmethod
     def get_release_date_url(cls) -> str:

@@ -46,58 +46,35 @@ class Sicar(Url):
         }
 
     def _download_captcha(self) -> Image:
-        """Download and process captcha image with proper session handling."""
+        """Download and process captcha image."""
         try:
-            # First visit the index page to ensure session is initialized
-            self._client.get(self._INDEX)
+            # First visit the index page to initialize session
+            response = self._client.get(self._INDEX)
             
-            # Set captcha-specific headers
+            # Generate random ID for captcha (similar to what the website does)
+            captcha_id = str(random.randint(100000, 999999))
+            
+            # Set specific headers for image download
             headers = {
                 'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Referer': self._RELEASE_DATE,
                 'Sec-Fetch-Dest': 'image',
                 'Sec-Fetch-Mode': 'no-cors',
-                'Sec-Fetch-Site': 'same-origin',
-                'Referer': self._INDEX,
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache'
+                'Sec-Fetch-Site': 'same-origin'
             }
             
-            # Add random parameter to avoid caching
-            random_id = int(random.random() * 1000000)
-            url = f"{self._RECAPTCHA}?{urlencode({'id': random_id})}"
+            # Get captcha URL with ID
+            url = self.get_recaptcha_url(captcha_id)
             
-            # Use session-aware request
-            response = self._client.get_with_session_check(
-                url=url,
-                index_url=self._INDEX,
-                headers=headers
-            )
-            
-            # Verify response
-            if response.headers.get('Content-Type', '').startswith('text/html'):
-                self._logger.error("Received HTML instead of image")
-                raise FailedToDownloadCaptchaException("Received HTML instead of image")
-            
-            # Save raw response for debugging
-            with open('raw_captcha.bin', 'wb') as f:
-                f.write(response.content)
+            # Download the captcha
+            self._logger.debug(f"Downloading captcha from {url}")
+            response = self._client.get(url, headers=headers)
             
             try:
                 captcha = Image.open(io.BytesIO(response.content))
-                
-                # Log image details
-                self._logger.debug(f"Image format: {captcha.format}")
-                self._logger.debug(f"Image size: {captcha.size}")
-                self._logger.debug(f"Image mode: {captcha.mode}")
-                
-                if captcha.mode != 'RGB':
-                    captcha = captcha.convert('RGB')
-                
-                # Save processed image for debugging
-                captcha.save('processed_captcha.png')
-                
+                # Save for debugging
+                captcha.save('debug_captcha.png')
                 return captcha
-                
             except Exception as img_error:
                 self._logger.error(f"Failed to process image data: {str(img_error)}")
                 raise FailedToDownloadCaptchaException() from img_error
