@@ -48,17 +48,51 @@ class Sicar(Url):
     def _download_captcha(self) -> Image:
         """Download and process captcha image."""
         try:
-            url = f"{self._RECAPTCHA}?{urlencode({'id': int(random.random() * 1000000)})}"
+            # Add random ID to avoid caching
+            random_id = int(random.random() * 1000000)
+            url = f"{self._RECAPTCHA}?{urlencode({'id': random_id})}"
             
-            response = self._client.get(url, headers=self._captcha_headers)
+            # Set specific headers for image
+            headers = {
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'image',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'Referer': self._INDEX
+            }
+            
+            # Make the request
+            self._logger.debug(f"Downloading captcha from URL: {url}")
+            response = self._client.get(url, headers=headers)
+            
+            # Log response details
+            self._logger.debug(f"Response status: {response.status_code}")
+            self._logger.debug(f"Response headers: {response.headers}")
+            self._logger.debug(f"Content length: {len(response.content)}")
+            
+            # Save raw response for debugging
+            with open('raw_captcha.bin', 'wb') as f:
+                f.write(response.content)
             
             try:
                 captcha = Image.open(io.BytesIO(response.content))
+                
+                # Log image details
+                self._logger.debug(f"Image format: {captcha.format}")
+                self._logger.debug(f"Image size: {captcha.size}")
+                self._logger.debug(f"Image mode: {captcha.mode}")
+                
                 if captcha.mode != 'RGB':
                     captcha = captcha.convert('RGB')
+                
+                # Save processed image for debugging
+                captcha.save('processed_captcha.png')
+                
                 return captcha
-            except UnidentifiedImageError as img_error:
-                self._logger.error(f"Failed to process captcha image: {str(img_error)}")
+                
+            except Exception as img_error:
+                self._logger.error(f"Failed to process image data: {str(img_error)}")
+                self._logger.error(f"Content-Type: {response.headers.get('Content-Type')}")
                 raise FailedToDownloadCaptchaException() from img_error
                 
         except Exception as error:
