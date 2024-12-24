@@ -9,7 +9,7 @@ import os
 import logging
 import numpy as np
 import cv2
-from paddleocr import PaddleOCR # Add import for PaddleOCR
+from paddleocr import PaddleOCR
 from SICAR.drivers.captcha import Captcha, CaptchaProcessingError
 
 class Paddle(Captcha):
@@ -82,43 +82,35 @@ class Paddle(Captcha):
         """
         try:
             if self.DEBUG_FOLDER:  # Check if DEBUG_FOLDER is set
-                os.makedirs(self.DEBUG_FOLDER, exist_ok=True)  # Create if it doesn't exist
+                os.makedirs(self.DEBUG_FOLDER, exist_ok=True)
                 if image.mode != 'RGB':
                     image = image.convert('RGB')
-                image.save(self.DEBUG_FOLDER / "1_original.png") # Save original
+                image.save(self.DEBUG_FOLDER / "1_original.png")
 
+            # Convert PIL Image to NumPy array
             img_array = np.array(image)
+
+            # 1. Convert to grayscale
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-            cv2.imwrite(str(DEBUG_FOLDER / "3_gray.png"), gray)
 
-            # Experiment with thresholding:
-            # Option 1: Adaptive Thresholding
-            # thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 3) # Example values
+            # 2. Adaptive Thresholding
+            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
 
-            # Option 2: Otsu's Thresholding
-            ret, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # 3. Denoising
+            denoised = cv2.fastNlMeansDenoising(thresh, None, 10, 7, 21)
 
-            cv2.imwrite(str(DEBUG_FOLDER / "5_thresh.png"), thresh)
+            if self.DEBUG_FOLDER:
+                # Save intermediate images if DEBUG_FOLDER is set
+                cv2.imwrite(str(self.DEBUG_FOLDER / "3_gray.png"), gray)
+                cv2.imwrite(str(self.DEBUG_FOLDER / "5_thresh.png"), thresh)
+                cv2.imwrite(str(self.DEBUG_FOLDER / "6_denoised.png"), denoised)
 
-            # Experiment with denoising (or skip it):
-            # Option 1: Denoising with reduced strength
-            # denoised = cv2.fastNlMeansDenoising(thresh, None, 3, 7, 21)
-
-            # Option 2: No denoising
-            denoised = thresh
-
-            cv2.imwrite(str(DEBUG_FOLDER / "6_denoised.png"), denoised)
-
-            # Experiment with resizing (optional):
-            # resized = cv2.resize(denoised, (100, 32))
-            # cv2.imwrite(str(DEBUG_FOLDER / "7_resized.png"), resized)
-
-            return denoised  # or resized if you're resizing
+            return denoised
 
         except Exception as e:
             self._logger.error(f"Error in PaddleOCR preprocessing: {str(e)}")
             raise CaptchaProcessingError("Failed to preprocess image for PaddleOCR") from e
-        
+
     def get_captcha(self, captcha: Image) -> str:
         """Extract text from captcha with improved accuracy."""
         try:
