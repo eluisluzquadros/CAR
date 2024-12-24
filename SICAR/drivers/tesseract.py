@@ -19,69 +19,97 @@ class Tesseract(Captcha):
         "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     )
 
-    def _remove_red(self, image: np.ndarray) -> np.ndarray:
+    def _remove_red(self, image: Image.Image) -> Image.Image:
         """Remove red components from image."""
-        # Ensure image is in correct format
-        if len(image.shape) != 3:
-            return image
+        try:
+            # Convert RGBA to RGB if needed
+            if image.mode == 'RGBA':
+                # Create white background
+                background = Image.new('RGB', image.size, (255, 255, 255))
+                # Paste using alpha channel as mask
+                background.paste(image, mask=image.split()[3])
+                image = background
             
-        # Convert to HSV
-        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
-        
-        # Define red color ranges
-        lower_red1 = np.array([0, 70, 50])
-        upper_red1 = np.array([10, 255, 255])
-        lower_red2 = np.array([170, 70, 50])
-        upper_red2 = np.array([180, 255, 255])
-        
-        # Create mask for red pixels
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        mask = cv2.bitwise_or(mask1, mask2)
-        
-        # Create output image
-        result = image.copy()
-        result[mask > 0] = [255, 255, 255]
-        
-        return result
+            # Convert to RGB if not already
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Convert to numpy array
+            img_array = np.array(image)
+            
+            # Convert to HSV
+            hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
+            
+            # Define red ranges
+            lower_red1 = np.array([0, 70, 50])
+            upper_red1 = np.array([10, 255, 255])
+            lower_red2 = np.array([170, 70, 50])
+            upper_red2 = np.array([180, 255, 255])
+            
+            # Create mask for red pixels
+            mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+            mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+            mask = cv2.bitwise_or(mask1, mask2)
+            
+            # Save debug images
+            os.makedirs('debug', exist_ok=True)
+            cv2.imwrite('debug/mask.png', mask)
+            
+            # Create output image
+            result = img_array.copy()
+            result[mask > 0] = [255, 255, 255]
+            
+            # Convert back to PIL
+            return Image.fromarray(result)
+            
+        except Exception as e:
+            self._logger.error(f"Error removing red: {str(e)}")
+            import traceback
+            self._logger.error(traceback.format_exc())
+            return image
 
     def get_captcha(self, captcha: Image) -> str:
         """Extract text from the captcha image."""
         try:
-            # Convert to numpy array
-            img_array = np.array(captcha)
-            
-            # Create debug directory
+            # Save original
             os.makedirs('debug', exist_ok=True)
-            
-            # Save original numpy array
-            cv2.imwrite('debug/1_original.png', cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+            captcha.save('debug/1_original.png')
             
             # Remove red
-            no_red = self._remove_red(img_array)
-            cv2.imwrite('debug/2_no_red.png', cv2.cvtColor(no_red, cv2.COLOR_RGB2BGR))
+            no_red = self._remove_red(captcha)
+            no_red.save('debug/2_no_red.png')
             
             # Convert to grayscale
-            gray = cv2.cvtColor(no_red, cv2.COLOR_RGB2GRAY)
-            cv2.imwrite('debug/3_gray.png', gray)
+            gray = no_red.convert('L')
+            gray.save('debug/3_gray.png')
             
-            # Apply threshold
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            cv2.imwrite('debug/4_binary.png', binary)
+            # Increase contrast
+            from PIL import ImageEnhance
+            enhancer = ImageEnhance.Contrast(gray)
+            enhanced = enhancer.enhance(2.0)
+            enhanced.save('debug/4_enhanced.png')
             
-            # Convert back to PIL Image
-            final = Image.fromarray(binary)
+            # Try OCR with different preprocessing
+            attempts = [
+                enhanced,  # Enhanced grayscale
+                gray,     # Original grayscale
+                no_red    # Color without red
+            ]
             
-            # Try OCR
-            text = pytesseract.image_to_string(
-                final,
-                config=self._custom_config
-            )
+            for i, img in enumerate(attempts):
+                try:
+                    text = pytesseract.image_to_string(
+                        img,
+                        config=self._custom_config
+                    )
+                    cleaned = re.sub(r'[^A-Z0-9]', '', text.upper())
+                    if cleaned:
+                        return cleaned
+                except Exception as e:
+                    self._logger.warning(f"OCR attempt {i+1} failed: {str(e)}")
+                    continue
             
-            # Clean up the text
-            result = re.sub(r'[^A-Z0-9]', '', text.upper())
-            
-            return result
+            return ""
             
         except Exception as e:
             self._logger.error(f"Error in OCR: {str(e)}")
