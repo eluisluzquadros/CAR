@@ -3,7 +3,7 @@
 
 import re
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 import numpy as np
 import cv2
 import os
@@ -21,7 +21,6 @@ class Tesseract(Captcha):
             pytesseract.get_tesseract_version()
         except:
             try:
-                # Install Tesseract on Colab if needed
                 subprocess.run(
                     ['apt-get', 'install', '-y', 'tesseract-ocr'],
                     check=True,
@@ -31,8 +30,15 @@ class Tesseract(Captcha):
                 self._logger.error(f"Failed to setup Tesseract: {str(e)}")
                 raise
 
+    def _remove_noise(self, image):
+        """Remove noise using morphological operations."""
+        kernel = np.ones((2,2), np.uint8)
+        opening = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
+        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
+        return closing
+
     def _preprocess_captcha(self, image: Image.Image) -> Image.Image:
-        """Enhanced preprocessing for SICAR captchas."""
+        """Enhanced preprocessing specifically for SICAR captchas."""
         try:
             # Convert to numpy array
             img_array = np.array(image)
@@ -43,25 +49,28 @@ class Tesseract(Captcha):
             else:
                 gray = img_array
             
+            # Invert image (since SICAR captchas are white on black)
+            inverted = cv2.bitwise_not(gray)
+            
             # Apply thresholding
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
             # Remove noise
-            denoised = cv2.fastNlMeansDenoising(binary)
-            
-            # Morphological operations to clean up
-            kernel = np.ones((2,2), np.uint8)
-            cleaned = cv2.morphologyEx(denoised, cv2.MORPH_CLOSE, kernel)
+            denoised = self._remove_noise(binary)
             
             # Convert back to PIL Image
-            processed = Image.fromarray(cleaned)
+            processed = Image.fromarray(denoised)
             
-            # Enhance contrast
-            enhancer = ImageEnhance.Contrast(processed)
-            processed = enhancer.enhance(2.0)
+            # Resize image (2x) to help OCR
+            width, height = processed.size
+            processed = processed.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
             
-            # Resize image to be larger (helps OCR)
-            processed = processed.resize((processed.width * 2, processed.height * 2), Image.Resampling.LANCZOS)
+            # Add padding
+            border = 20
+            processed = ImageOps.expand(processed, border=border, fill='white')
+            
+            # Save debug image
+            processed.save('debug_processed.png')
             
             return processed
             
@@ -71,13 +80,10 @@ class Tesseract(Captcha):
 
     def _process_text(self, text: str) -> str:
         """Clean up OCR results."""
-        # Remove any whitespace
-        text = text.strip()
+        # Remove any whitespace and non-alphanumeric characters
+        text = re.sub(r'[^A-Za-z0-9]+', '', text.strip())
         
-        # Remove any non-alphanumeric characters
-        text = re.sub(r'[^A-Za-z0-9]+', '', text)
-        
-        # Convert to uppercase since SICAR captchas are uppercase
+        # Convert to uppercase (SICAR captchas are uppercase)
         text = text.upper()
         
         return text
@@ -85,40 +91,47 @@ class Tesseract(Captcha):
     def get_captcha(self, captcha: Image) -> str:
         """Extract text from captcha with improved accuracy."""
         try:
+            # Save original for debugging
+            captcha.save('debug_original.png')
+            
             # Preprocess the image
             processed = self._preprocess_captcha(captcha)
             
-            # Save intermediate result for debugging
-            processed.save("processed_captcha.png")
-            
-            # OCR Configuration
+            # OCR Configuration tuned for SICAR captchas
             custom_config = (
-                '--psm 8 '  # Single word mode
-                '--oem 3 '  # LSTM only
+                '--psm 7 '  # Treat image as single line of text
+                '--oem 3 '  # Use LSTM OCR Engine
                 '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
-                'tessedit_minimal_confidence=60'
+                'tessedit_do_invert=0 '
+                'tessedit_min_confidence=60'
             )
             
-            # Multiple OCR attempts with different preprocessing
+            # Try multiple preprocessing variations
             attempts = [
                 lambda: processed,
                 lambda: processed.filter(ImageFilter.SHARPEN),
-                lambda: ImageEnhance.Contrast(processed).enhance(1.5),
-                lambda: ImageEnhance.Brightness(processed).enhance(1.2)
+                lambda: ImageEnhance.Contrast(processed).enhance(2.0),
+                lambda: processed.filter(ImageFilter.EDGE_ENHANCE_MORE),
             ]
             
-            for attempt_func in attempts:
+            for i, attempt_func in enumerate(attempts):
                 try:
                     img = attempt_func()
+                    img.save(f'debug_attempt_{i}.png')  # Save each attempt for debugging
+                    
                     text = pytesseract.image_to_string(
                         img,
                         config=custom_config,
                     )
+                    
                     cleaned = self._process_text(text)
+                    self._logger.debug(f"Attempt {i + 1}: Raw='{text}', Cleaned='{cleaned}'")
+                    
                     if len(cleaned) >= 4:  # SICAR captchas are usually 5 chars
                         return cleaned
+                        
                 except Exception as e:
-                    self._logger.warning(f"OCR attempt failed: {str(e)}")
+                    self._logger.warning(f"OCR attempt {i + 1} failed: {str(e)}")
                     continue
             
             raise CaptchaProcessingError("No valid text detected in captcha")
