@@ -77,41 +77,39 @@ class Paddle(Captcha):
 
     def _preprocess_image(self, image: Image.Image) -> np.ndarray:
         """
-        Preprocesses the captcha image for better OCR accuracy.
-        
-        Steps:
-            1. Convert to grayscale.
-            2. Adaptive Thresholding
-            3. Denoising
-            4. Resize (PaddleOCR might have specific size requirements)
-
-        Args:
-            image: The captcha image (PIL Image).
-
-        Returns:
-            The preprocessed image as a numpy array.
+        Preprocesses the captcha image.
         """
-
         try:
             if image.mode != 'RGB':
                 image = image.convert('RGB')
 
-            # Convert PIL Image to NumPy array
             img_array = np.array(image)
-
-            # 1. Convert to grayscale
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            cv2.imwrite(str(DEBUG_FOLDER / "3_gray.png"), gray)
 
-            # 2. Adaptive Thresholding
-            thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+            # Experiment with thresholding:
+            # Option 1: Adaptive Thresholding
+            # thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 3) # Example values
 
-            # 3. Denoising
-            denoised = cv2.fastNlMeansDenoising(thresh, None, 10, 7, 21)
+            # Option 2: Otsu's Thresholding
+            ret, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-            # 4. Resize (Optional: Adjust based on PaddleOCR model requirements)
-            # resized = cv2.resize(denoised, (100, 32))  # Example resizing
+            cv2.imwrite(str(DEBUG_FOLDER / "5_thresh.png"), thresh)
 
-            return denoised
+            # Experiment with denoising (or skip it):
+            # Option 1: Denoising with reduced strength
+            # denoised = cv2.fastNlMeansDenoising(thresh, None, 3, 7, 21)
+
+            # Option 2: No denoising
+            denoised = thresh
+
+            cv2.imwrite(str(DEBUG_FOLDER / "6_denoised.png"), denoised)
+
+            # Experiment with resizing (optional):
+            # resized = cv2.resize(denoised, (100, 32))
+            # cv2.imwrite(str(DEBUG_FOLDER / "7_resized.png"), resized)
+
+            return denoised  # or resized if you're resizing
 
         except Exception as e:
             self._logger.error(f"Error in PaddleOCR preprocessing: {str(e)}")
