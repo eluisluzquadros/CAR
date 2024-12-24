@@ -1,30 +1,39 @@
-# setup_structure.py
+# /content/CAR/setup_structure.py
 import os
 import shutil
+from pathlib import Path
 
 def setup_project():
-    # Create base directory structure
-    os.makedirs("SICAR/drivers", exist_ok=True)
+    """
+    Sets up the project directory structure and moves files to their correct locations.
+    """
+    # Create base directory structure using pathlib for better path handling
+    base_dir = Path("SICAR")
+    drivers_dir = base_dir / "drivers"
     
-    # Create empty __init__.py files
-    open("SICAR/__init__.py", "a").close()
-    open("SICAR/drivers/__init__.py", "a").close()
+    base_dir.mkdir(exist_ok=True)
+    drivers_dir.mkdir(exist_ok=True)
     
-    # Move files to correct locations if they exist
+    # Create empty __init__.py files for package recognition
+    (base_dir / "__init__.py").touch()
+    (drivers_dir / "__init__.py").touch()
+    
+    # File mappings using pathlib.Path
     file_mappings = {
-        "captcha.py": "SICAR/drivers/captcha.py",
-        "tesseract.py": "SICAR/drivers/tesseract.py",
-        "http_client.py": "SICAR/http_client.py",
-        "sicar.py": "SICAR/sicar.py",
-        "state.py": "SICAR/state.py",
-        "polygon.py": "SICAR/polygon.py",
-        "url.py": "SICAR/url.py",
-        "exceptions.py": "SICAR/exceptions.py",
+        Path("captcha.py"): drivers_dir / "captcha.py",
+        Path("tesseract.py"): drivers_dir / "tesseract.py",
+        Path("paddle.py"): drivers_dir / "paddle.py",
+        Path("http_client.py"): base_dir / "http_client.py",
+        Path("sicar.py"): base_dir / "sicar.py",
+        Path("state.py"): base_dir / "state.py",
+        Path("polygon.py"): base_dir / "polygon.py",
+        Path("url.py"): base_dir / "url.py",
+        Path("exceptions.py"): base_dir / "exceptions.py",
     }
     
     for source, dest in file_mappings.items():
-        if os.path.exists(source):
-            shutil.move(source, dest)
+        if source.exists():
+            shutil.move(str(source), str(dest))  # shutil.move works with Path objects
 
     print("Project structure set up successfully!")
 
