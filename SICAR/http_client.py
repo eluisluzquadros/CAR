@@ -1,77 +1,89 @@
 # SICAR/http_client.py
-"""Basic HTTP Client Module with direct SSL configuration."""
+"""HTTP Client Module with legacy SSL support."""
 
 import requests
 from requests.adapters import HTTPAdapter
 import urllib3
 import logging
-import ssl
 from typing import Optional, Dict, Union
 from pathlib import Path
+import ssl
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-class CustomHTTPAdapter(HTTPAdapter):
-    """Custom adapter that sets specific SSL configuration"""
-    def __init__(self, **kwargs):
-        super(CustomHTTPAdapter, self).__init__(**kwargs)
+class TLSAdapter(HTTPAdapter):
+    def __init__(self, ssl_options=0, **kwargs):
+        self.ssl_options = ssl_options
+        super(TLSAdapter, self).__init__(**kwargs)
 
-    def init_poolmanager(self, *args, **kwargs):
-        # Create our own SSL context
-        context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS)  # Use TLS protocol
-        context.minimum_version = ssl.TLSVersion.TLSv1  # Allow TLS 1.0 and up
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        context.set_ciphers('ALL:@SECLEVEL=1')  # Use all available ciphers
+    def init_poolmanager(self, *pool_args, **pool_kwargs):
+        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.set_ciphers('DEFAULT@SECLEVEL=1')
         
-        kwargs['ssl_context'] = context
-        return super().init_poolmanager(*args, **kwargs)
+        self.poolmanager = urllib3.PoolManager(
+            *pool_args,
+            ssl_context=ctx,
+            **pool_kwargs
+        )
 
 class HttpClient:
-    """HTTP client with basic SSL configuration"""
+    """HTTP client with legacy SSL support"""
     
-    def __init__(self, timeout: float = 30.0):
+    def __init__(self, verify_ssl: bool = False, timeout: float = 30.0):
         self._session = self._create_session()
-        self._headers = self._get_default_headers()
+        self._base_headers = self._get_default_headers()
         self._logger = logging.getLogger(self.__class__.__name__)
         self._timeout = timeout
 
     def _get_default_headers(self) -> Dict[str, str]:
-        """Get minimal headers."""
+        """Get browser-like headers."""
         return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "*/*",
-            "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-            "Connection": "close"  # Try with close instead of keep-alive
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
         }
 
     def _create_session(self) -> requests.Session:
-        """Create session with minimal configuration."""
+        """Create session with legacy SSL support."""
         session = requests.Session()
-        adapter = CustomHTTPAdapter(max_retries=3)
+        adapter = TLSAdapter(max_retries=3)
         session.mount('https://', adapter)
         session.verify = False
         return session
 
     def get(self, url: str, **kwargs) -> requests.Response:
-        """Make GET request."""
+        """Perform GET request with proper header handling."""
         try:
+            # Start with base headers
+            headers = self._base_headers.copy()
+            
+            # Update with any custom headers passed to the method
+            if 'headers' in kwargs:
+                headers.update(kwargs.pop('headers'))
+            
+            # Make the request with combined headers
             response = self._session.get(
                 url,
-                headers=self._headers,
+                headers=headers,
                 timeout=self._timeout,
                 verify=False,
                 **kwargs
             )
             response.raise_for_status()
             return response
+            
         except Exception as e:
             self._logger.error(f"Request failed: {str(e)}")
             raise
 
     def download_file(self, url: str, output_path: Union[str, Path], **kwargs) -> bool:
-        """Download file."""
+        """Download file with progress tracking."""
         try:
             output_path = Path(output_path)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +102,12 @@ class HttpClient:
                 output_path.unlink()
             return False
 
+    def set_headers(self, headers: Optional[Dict[str, str]] = None):
+        """Update base headers."""
+        if headers:
+            self._base_headers.update(headers)
+
     def close(self):
-        """Close session."""
+        """Close the session."""
         if self._session:
             self._session.close()
