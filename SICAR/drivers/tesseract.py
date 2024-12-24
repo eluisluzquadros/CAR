@@ -1,9 +1,9 @@
 # SICAR/drivers/tesseract.py
-"""Tesseract OCR Driver optimized for SICAR captchas."""
+"""Tesseract OCR Driver optimized for strikethrough captchas."""
 
 import re
 import pytesseract
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter
 import numpy as np
 import cv2
 import os
@@ -30,44 +30,53 @@ class Tesseract(Captcha):
                 self._logger.error(f"Failed to setup Tesseract: {str(e)}")
                 raise
 
-    def _remove_noise(self, image):
-        """Remove noise using morphological operations."""
-        kernel = np.ones((2,2), np.uint8)
-        opening = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
-        closing = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
-        return closing
+    def _remove_strikethrough(self, image_array: np.ndarray) -> np.ndarray:
+        """Remove red strikethrough line."""
+        # Convert to HSV for better color detection
+        hsv = cv2.cvtColor(image_array, cv2.COLOR_RGB2HSV)
+        
+        # Define red color range (both upper and lower ranges for red in HSV)
+        lower_red1 = np.array([0, 70, 50])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 70, 50])
+        upper_red2 = np.array([180, 255, 255])
+        
+        # Create masks for red color
+        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+        red_mask = mask1 + mask2
+        
+        # Invert mask to get everything but red
+        mask = cv2.bitwise_not(red_mask)
+        
+        # Apply mask to original image
+        result = cv2.bitwise_and(image_array, image_array, mask=mask)
+        
+        return result
 
     def _preprocess_captcha(self, image: Image.Image) -> Image.Image:
-        """Enhanced preprocessing specifically for SICAR captchas."""
+        """Preprocess captcha image to remove strikethrough and enhance text."""
         try:
             # Convert to numpy array
             img_array = np.array(image)
             
-            # Convert to grayscale if needed
-            if len(img_array.shape) == 3:
-                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-            else:
-                gray = img_array
+            # Remove red strikethrough
+            cleaned = self._remove_strikethrough(img_array)
             
-            # Invert image (since SICAR captchas are white on black)
-            inverted = cv2.bitwise_not(gray)
+            # Convert to grayscale
+            gray = cv2.cvtColor(cleaned, cv2.COLOR_RGB2GRAY)
             
-            # Apply thresholding
-            _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Remove noise
-            denoised = self._remove_noise(binary)
+            # Apply thresholding to get black text
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
             # Convert back to PIL Image
-            processed = Image.fromarray(denoised)
+            processed = Image.fromarray(binary)
             
-            # Resize image (2x) to help OCR
-            width, height = processed.size
-            processed = processed.resize((width * 2, height * 2), Image.Resampling.LANCZOS)
-            
-            # Add padding
-            border = 20
-            processed = ImageOps.expand(processed, border=border, fill='white')
+            # Resize to make text clearer
+            processed = processed.resize(
+                (processed.width * 2, processed.height * 2),
+                Image.Resampling.LANCZOS
+            )
             
             # Save debug image
             processed.save('debug_processed.png')
@@ -80,16 +89,16 @@ class Tesseract(Captcha):
 
     def _process_text(self, text: str) -> str:
         """Clean up OCR results."""
-        # Remove any whitespace and non-alphanumeric characters
+        # Remove any non-alphanumeric characters
         text = re.sub(r'[^A-Za-z0-9]+', '', text.strip())
         
-        # Convert to uppercase (SICAR captchas are uppercase)
+        # Convert to uppercase
         text = text.upper()
         
         return text
 
     def get_captcha(self, captcha: Image) -> str:
-        """Extract text from captcha with improved accuracy."""
+        """Extract text from strikethrough captcha."""
         try:
             # Save original for debugging
             captcha.save('debug_original.png')
@@ -97,13 +106,12 @@ class Tesseract(Captcha):
             # Preprocess the image
             processed = self._preprocess_captcha(captcha)
             
-            # OCR Configuration tuned for SICAR captchas
+            # OCR Configuration
             custom_config = (
                 '--psm 7 '  # Treat image as single line of text
-                '--oem 3 '  # Use LSTM OCR Engine
+                '--oem 3 '  # LSTM OCR Engine
                 '-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 '
-                'tessedit_do_invert=0 '
-                'tessedit_min_confidence=60'
+                'tessedit_do_invert=0'
             )
             
             # Try multiple preprocessing variations
@@ -111,23 +119,23 @@ class Tesseract(Captcha):
                 lambda: processed,
                 lambda: processed.filter(ImageFilter.SHARPEN),
                 lambda: ImageEnhance.Contrast(processed).enhance(2.0),
-                lambda: processed.filter(ImageFilter.EDGE_ENHANCE_MORE),
+                lambda: processed.filter(ImageFilter.EDGE_ENHANCE_MORE)
             ]
             
             for i, attempt_func in enumerate(attempts):
                 try:
                     img = attempt_func()
-                    img.save(f'debug_attempt_{i}.png')  # Save each attempt for debugging
+                    img.save(f'debug_attempt_{i}.png')
                     
                     text = pytesseract.image_to_string(
                         img,
-                        config=custom_config,
+                        config=custom_config
                     )
                     
                     cleaned = self._process_text(text)
                     self._logger.debug(f"Attempt {i + 1}: Raw='{text}', Cleaned='{cleaned}'")
                     
-                    if len(cleaned) >= 4:  # SICAR captchas are usually 5 chars
+                    if len(cleaned) >= 4:
                         return cleaned
                         
                 except Exception as e:
