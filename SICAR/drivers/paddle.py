@@ -9,12 +9,14 @@ import os
 import logging
 import numpy as np
 import cv2
+from paddleocr import PaddleOCR # Add import for PaddleOCR
 from SICAR.drivers.captcha import Captcha, CaptchaProcessingError
 
 class Paddle(Captcha):
     def __init__(self):
         super().__init__()
         self._logger = logging.getLogger(self.__class__.__name__)
+        self.DEBUG_FOLDER = None  # Initialize DEBUG_FOLDER as None
         self._setup_paddle()
         self._initialize_paddle()
 
@@ -41,7 +43,6 @@ class Paddle(Captcha):
     def _initialize_paddle(self):
         """Initialize PaddleOCR with optimized settings."""
         try:
-            from paddleocr import PaddleOCR
 
             # Configure for captcha recognition
             self.ocr = PaddleOCR(
@@ -77,11 +78,14 @@ class Paddle(Captcha):
 
     def _preprocess_image(self, image: Image.Image) -> np.ndarray:
         """
-        Preprocesses the captcha image.
+        Preprocesses the captcha image for better OCR accuracy.
         """
         try:
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
+            if self.DEBUG_FOLDER:  # Check if DEBUG_FOLDER is set
+                os.makedirs(self.DEBUG_FOLDER, exist_ok=True)  # Create if it doesn't exist
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                image.save(self.DEBUG_FOLDER / "1_original.png") # Save original
 
             img_array = np.array(image)
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
